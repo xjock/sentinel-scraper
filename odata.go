@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,53 +47,13 @@ func SaveKMLForOData(product odataProduct, destDir string) (string, error) {
 		return kmlPath, nil
 	}
 
-	ring := product.GeoFootprint.Coordinates[0]
-	var coords strings.Builder
-	for _, p := range ring {
-		if len(p) >= 2 {
-			fmt.Fprintf(&coords, "%f,%f,0 ", p[0], p[1])
-		}
-	}
-
-	var extData strings.Builder
-	extData.WriteString("      <ExtendedData>\n")
-	fmt.Fprintf(&extData, "        <Data name=\"id\"><value>%s</value></Data>\n", product.Name)
+	var fields []kmlField
+	fields = append(fields, kmlField{Name: "id", Value: product.Name})
 	if !product.OriginDate.IsZero() {
-		fmt.Fprintf(&extData, "        <Data name=\"datetime\"><value>%s</value></Data>\n", product.OriginDate.Format(time.RFC3339))
+		fields = append(fields, kmlField{Name: "datetime", Value: product.OriginDate.Format(time.RFC3339)})
 	}
-	extData.WriteString("      </ExtendedData>")
-
-	kml := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
-    <Style id="polyStyle">
-      <LineStyle>
-        <color>ff0000ff</color>
-        <width>2</width>
-      </LineStyle>
-      <PolyStyle>
-        <color>7f0000ff</color>
-        <fill>1</fill>
-        <outline>1</outline>
-      </PolyStyle>
-    </Style>
-    <Placemark>
-      <name>%s</name>
-      <styleUrl>#polyStyle</styleUrl>
-%s
-      <Polygon>
-        <outerBoundaryIs>
-          <LinearRing>
-            <coordinates>%s</coordinates>
-          </LinearRing>
-        </outerBoundaryIs>
-      </Polygon>
-    </Placemark>
-  </Document>
-</kml>`, product.Name, extData.String(), strings.TrimSpace(coords.String()))
-
-	if err := os.WriteFile(kmlPath, []byte(kml), 0644); err != nil {
-		return "", fmt.Errorf("write kml: %w", err)
+	if err := writeKMLFile(kmlPath, product.Name, product.GeoFootprint.Coordinates[0], fields); err != nil {
+		return "", err
 	}
 	fmt.Printf("  [saved] %s\n", product.Name+".kml")
 	return kmlPath, nil
@@ -162,80 +123,19 @@ func queryODataProducts(auth Authenticator, cfg *Config) ([]odataProduct, error)
 	return result.Value, nil
 }
 
-func downloadODataProductOnce(auth Authenticator, product odataProduct, destDir string, offset int64) (int64, error) {
+func downloadODataProductOnce(auth Authenticator, product odataProduct, destDir string) (int64, error) {
 	downloadURL := fmt.Sprintf("%s(%s)/$value", cdseODataDownloadURL, product.ID)
-
-	req, err := http.NewRequestWithContext(context.Background(), "GET", downloadURL, nil)
-	if err != nil {
-		return offset, fmt.Errorf("create request: %w", err)
-	}
-	if offset > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-	}
-	if err := auth.Apply(req); err != nil {
-		return offset, fmt.Errorf("authenticate: %w", err)
-	}
-
-	client := &http.Client{Timeout: 30 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return offset, fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		if offset > 0 {
-			if resp.ContentLength > 0 && offset == resp.ContentLength {
-				return offset, nil
-			}
-			// Server doesn't support Range; restart from scratch.
-			offset = 0
-		}
-		return odataWriteBody(resp, product, destDir, offset, product.ContentLength)
-
-	case http.StatusPartialContent:
-		total := parseContentRangeTotal(resp.Header.Get("Content-Range"))
-		if total == 0 && resp.ContentLength > 0 {
-			total = offset + resp.ContentLength
-		}
-		return odataWriteBody(resp, product, destDir, offset, total)
-
-	case http.StatusRequestedRangeNotSatisfiable:
-		return offset, nil
-
-	default:
-		body, _ := io.ReadAll(resp.Body)
-		return offset, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
-	}
-}
-
-func odataWriteBody(resp *http.Response, product odataProduct, destDir string, offset, total int64) (int64, error) {
 	tmpPath := filepath.Join(destDir, product.Name+".zip.tmp")
-
-	var f *os.File
-	var err error
-	if offset > 0 {
-		f, err = os.OpenFile(tmpPath, os.O_APPEND|os.O_WRONLY, 0644)
-	} else {
-		f, err = os.Create(tmpPath)
-	}
+	client := &http.Client{Timeout: 30 * time.Minute}
+	finalSize, total, _, err := resumableDownload(context.Background(), client, downloadURL, auth, tmpPath, product.Name, product.ContentLength)
 	if err != nil {
-		return offset, fmt.Errorf("open file: %w", err)
+		return 0, err
 	}
-
-	pr := &progressReader{r: resp.Body, total: total, current: offset, label: product.Name}
-	_, err = io.Copy(f, pr)
-	f.Close()
-	if err != nil {
-		return offset, fmt.Errorf("write file: %w", err)
+	if total > 0 && finalSize != total {
+		os.Remove(tmpPath)
+		return 0, fmt.Errorf("size mismatch: got %s, expected %s", formatBytes(finalSize), formatBytes(total))
 	}
-
-	info, err := os.Stat(tmpPath)
-	if err != nil {
-		return offset, fmt.Errorf("stat file: %w", err)
-	}
-	return info.Size(), nil
+	return finalSize, nil
 }
 
 func downloadODataProduct(auth Authenticator, product odataProduct, destDir string, maxRetries int) error {
@@ -249,23 +149,10 @@ func downloadODataProduct(auth Authenticator, product odataProduct, destDir stri
 		return nil
 	}
 
-	tmpPath := outputPath + ".tmp"
-	var offset int64
-	if info, err := os.Stat(tmpPath); err == nil {
-		offset = info.Size()
-		pct := ""
-		if product.ContentLength > 0 {
-			pct = fmt.Sprintf(" (%d%%)", int(offset*100/product.ContentLength))
-		}
-		fmt.Printf("  [resuming] %s from %s%s\n", product.Name, formatBytes(offset), pct)
-	} else {
-		fmt.Printf("  [downloading] %s (%.1f MB)\n", product.Name, float64(product.ContentLength)/1024/1024)
-	}
-
 	var finalSize int64
 	var err error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		finalSize, err = downloadODataProductOnce(auth, product, destDir, offset)
+		finalSize, err = downloadODataProductOnce(auth, product, destDir)
 		if err == nil {
 			break
 		}
@@ -279,11 +166,7 @@ func downloadODataProduct(auth Authenticator, product odataProduct, destDir stri
 		return err
 	}
 
-	if product.ContentLength > 0 && finalSize != product.ContentLength {
-		os.Remove(tmpPath)
-		return fmt.Errorf("size mismatch: got %s, expected %s", formatBytes(finalSize), formatBytes(product.ContentLength))
-	}
-
+	tmpPath := filepath.Join(destDir, product.Name+".zip.tmp")
 	if err := os.Rename(tmpPath, outputPath); err != nil {
 		return fmt.Errorf("rename file: %w", err)
 	}
@@ -323,17 +206,51 @@ func runODataFlow(cfg *Config, auth Authenticator, destDir string) {
 		}
 	}
 
+	type odataTask struct{ product odataProduct }
+	type odataResult struct {
+		product odataProduct
+		err     error
+		offline bool
+	}
+
+	tasks := make(chan odataTask, cfg.MaxWorkers*2)
+	results := make(chan odataResult, cfg.MaxWorkers*2)
+
+	var wg sync.WaitGroup
+	for i := 0; i < cfg.MaxWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range tasks {
+				if !t.product.Online {
+					results <- odataResult{product: t.product, offline: true}
+					continue
+				}
+				err := downloadODataProduct(auth, t.product, destDir, cfg.MaxRetries)
+				results <- odataResult{product: t.product, err: err}
+			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
 	fmt.Println("\n=== Downloading Products ===")
+	for _, p := range products {
+		tasks <- odataTask{product: p}
+	}
+	close(tasks)
+
 	failed := 0
 	skipped := 0
-	for _, p := range products {
-		if !p.Online {
-			fmt.Printf("  [skip] %s is offline in LTA\n", p.Name)
+	for r := range results {
+		switch {
+		case r.offline:
+			fmt.Printf("  [skip] %s is offline in LTA\n", r.product.Name)
 			skipped++
-			continue
-		}
-		if err := downloadODataProduct(auth, p, destDir, cfg.MaxRetries); err != nil {
-			fmt.Fprintf(os.Stderr, "  [error] %s: %v\n", p.Name, err)
+		case r.err != nil:
+			fmt.Fprintf(os.Stderr, "  [error] %s: %v\n", r.product.Name, r.err)
 			failed++
 		}
 	}
@@ -429,14 +346,14 @@ func extractRGBJP2s(zipPath, outDir string) (string, string, string, error) {
 }
 
 // processODataProduct 把整景 zip 解压出 R/G/B 波段，合成拉伸成 byte 格式 tif，
-// 再跑 gdal_trace_outline → gdalwarp -cutline → pkRenew 修复 nodata 像素，
-// 最终目录下保留原始 .zip 和 *_byte_renew.tif。renew 失败时回退保留 *_byte.tif。
+// 再跑 gdal_trace_outline → gdal_rasterize → gdalwarp → gdal_merge_simple 合成 RGBA，
+// 最终目录下保留原始 .zip 和 *_rgba.tif。rgba 失败时回退保留 *_byte.tif。
 func processODataProduct(zipPath, destDir, productName string) error {
 	bytePath := filepath.Join(destDir, productName+"_byte.tif")
-	renewPath := filepath.Join(destDir, productName+"_byte_renew.tif")
+	rgbaPath := filepath.Join(destDir, productName+"_rgba.tif")
 
-	if _, err := os.Stat(renewPath); err == nil {
-		fmt.Printf("  [skip] %s already exists\n", filepath.Base(renewPath))
+	if _, err := os.Stat(rgbaPath); err == nil {
+		fmt.Printf("  [skip] %s already exists\n", filepath.Base(rgbaPath))
 		return nil
 	}
 
@@ -444,7 +361,6 @@ func processODataProduct(zipPath, destDir, productName string) error {
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return fmt.Errorf("mkdir workDir: %w", err)
 	}
-	// defer os.RemoveAll(workDir)  // 调试期间保留中间文件
 
 	if _, err := os.Stat(bytePath); err != nil {
 		fmt.Printf("  [extract] %s -> R10m B02/B03/B04\n", productName)
@@ -457,17 +373,16 @@ func processODataProduct(zipPath, destDir, productName string) error {
 		}
 		fmt.Printf("  [byte] %s\n", bytePath)
 	} else {
-		fmt.Printf("  [reuse] %s, retrying renew\n", filepath.Base(bytePath))
+		fmt.Printf("  [reuse] %s, retrying rgba\n", filepath.Base(bytePath))
 	}
 
-	if err := renewByteTIFF(bytePath, renewPath, workDir); err != nil {
-		fmt.Fprintf(os.Stderr, "  [renew skip] %s: %v\n", productName, err)
+	if err := buildRGBA(bytePath, rgbaPath, workDir); err != nil {
+		fmt.Fprintf(os.Stderr, "  [rgba skip] %s: %v\n", productName, err)
 		return nil
 	}
 
-	// if err := os.Remove(bytePath); err != nil {
-	// 	fmt.Fprintf(os.Stderr, "  [warn] remove old byte tif: %v\n", err)
-	// }
-	fmt.Printf("  [renew] %s\n", filepath.Base(renewPath))
+	os.Remove(bytePath)
+	os.RemoveAll(workDir)
+	fmt.Printf("  [rgba] %s\n", filepath.Base(rgbaPath))
 	return nil
 }

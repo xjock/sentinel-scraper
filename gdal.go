@@ -6,7 +6,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// removeWithRetry 在 Windows 上 GDAL 进程刚退出时文件句柄可能未立即释放，
+// 短暂重试后再删除，避免中间文件残留。
+func removeWithRetry(path string) {
+	for i := 0; i < 5; i++ {
+		if err := os.Remove(path); err == nil || os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
 
 func findGDALTool(name string) string {
 	exeName := name + ".exe"
@@ -38,23 +50,28 @@ func gdalEnv() []string {
 func BuildRGB(destDir string, itemID string) error {
 	byteName := fmt.Sprintf("%s_byte.tif", itemID)
 	bytePath := filepath.Join(destDir, byteName)
-	renewName := fmt.Sprintf("%s_byte_renew.tif", itemID)
-	renewPath := filepath.Join(destDir, renewName)
+	rgbaName := fmt.Sprintf("%s_rgba.tif", itemID)
+	rgbaPath := filepath.Join(destDir, rgbaName)
 
-	if _, err := os.Stat(renewPath); err == nil {
-		fmt.Printf("  [skip] %s already exists\n", renewName)
+	if _, err := os.Stat(rgbaPath); err == nil {
+		fmt.Printf("  [skip] %s already exists\n", rgbaName)
 		return nil
 	}
 
+	rgbPath := filepath.Join(destDir, fmt.Sprintf("%s_RGB.tif", itemID))
+
 	// 若已存在未renew的 _byte.tif，直接复用，不重新合成
 	if _, err := os.Stat(bytePath); err == nil {
-		fmt.Printf("  [reuse] %s, retrying renew\n", byteName)
-		if err := renewByteTIFF(bytePath, renewPath, destDir); err != nil {
-			fmt.Fprintf(os.Stderr, "  [renew skip] %s: %v\n", itemID, err)
+		fmt.Printf("  [reuse] %s, retrying rgba\n", byteName)
+		if err := buildRGBA(bytePath, rgbaPath, destDir); err != nil {
+			fmt.Fprintf(os.Stderr, "  [rgba skip] %s: %v\n", itemID, err)
+			removeWithRetry(bytePath)
+			removeWithRetry(rgbPath)
 			return nil
 		}
-		os.Remove(bytePath)
-		fmt.Printf("  [renew] %s\n", renewName)
+		removeWithRetry(bytePath)
+		removeWithRetry(rgbPath)
+		fmt.Printf("  [rgba] %s\n", rgbaName)
 		return nil
 	}
 
@@ -79,7 +96,6 @@ func BuildRGB(destDir string, itemID string) error {
 	}
 	defer os.Remove(vrtPath)
 
-	rgbPath := filepath.Join(destDir, fmt.Sprintf("%s_RGB.tif", itemID))
 	transArgs := []string{vrtPath, rgbPath}
 	fmt.Printf("  [cmd] %s %s\n", findGDALTool("gdal_translate"), strings.Join(transArgs, " "))
 	transCmd := exec.Command(findGDALTool("gdal_translate"), transArgs...)
@@ -90,7 +106,7 @@ func BuildRGB(destDir string, itemID string) error {
 		return fmt.Errorf("gdal_translate failed: %w", err)
 	}
 
-	// 固定 0-3000 拉伸到 1-255，0 保留为 nodata
+	// 固定 0-3000 拉伸到 0-255，0 保留为 nodata
 	args := []string{
 		"-ot", "Byte",
 		"-a_nodata", "0",
@@ -111,14 +127,16 @@ func BuildRGB(destDir string, itemID string) error {
 
 	fmt.Printf("  [rgb] %s  %s\n", rgbPath, bytePath)
 
-	if err := renewByteTIFF(bytePath, renewPath, destDir); err != nil {
-		fmt.Fprintf(os.Stderr, "  [renew skip] %s: %v\n", itemID, err)
+	if err := buildRGBA(bytePath, rgbaPath, destDir); err != nil {
+		fmt.Fprintf(os.Stderr, "  [rgba skip] %s: %v\n", itemID, err)
+		removeWithRetry(bytePath)
+		removeWithRetry(rgbPath)
 		return nil
 	}
 
-	// os.Remove(bytePath)
-	// os.Remove(rgbPath)
-	fmt.Printf("  [renew] %s\n", renewName)
+	removeWithRetry(bytePath)
+	removeWithRetry(rgbPath)
+	fmt.Printf("  [rgba] %s\n", rgbaName)
 	return nil
 }
 
@@ -156,16 +174,63 @@ func buildRGBByte(redPath, greenPath, bluePath, bytePath, workDir string) error 
 	return nil
 }
 
-// renewByteTIFF 对 bytePath 跑 gdal_trace_outline → gdalwarp -cutline → pkRenew，
-// 把修复后的图写到 outputPath。中间 shapefile 与 masked tif 落在 workDir 并清理。
-// 原 bytePath 不在此函数中删除，由调用者负责。失败时不会留下半成品 outputPath。
-func renewByteTIFF(bytePath, outputPath, workDir string) error {
-	base := strings.TrimSuffix(filepath.Base(bytePath), filepath.Ext(bytePath))
-	outlineBase := filepath.Join(workDir, base+"_outline")
-	outlinePath := outlineBase + ".shp"
-	maskedPath := filepath.Join(workDir, base+"_masked.tif")
+func getImageSize(tifPath string) (int, int, error) {
+	cmd := exec.Command(findGDALTool("gdalinfo"), tifPath)
+	cmd.Env = gdalEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("gdalinfo failed: %w", err)
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Size is ") {
+			var w, h int
+			if _, err := fmt.Sscanf(line, "Size is %d, %d", &w, &h); err == nil {
+				return w, h, nil
+			}
+		}
+	}
+	return 0, 0, fmt.Errorf("could not parse image size from gdalinfo")
+}
 
-	traceArgs := []string{bytePath, "-ndv", "0", "-out-cs", "en", "-ogr-out", outlinePath}
+// getImageExtent 解析 gdalinfo 输出，返回投影坐标系的 extent (xmin, ymin, xmax, ymax)
+func getImageExtent(tifPath string) (float64, float64, float64, float64, error) {
+	cmd := exec.Command(findGDALTool("gdalinfo"), tifPath)
+	cmd.Env = gdalEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("gdalinfo failed: %w", err)
+	}
+	var xmin, ymax, xmax, ymin float64
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Upper Left  (") {
+			fmt.Sscanf(line, "Upper Left  ( %f, %f)", &xmin, &ymax)
+		} else if strings.HasPrefix(line, "Lower Right (") {
+			fmt.Sscanf(line, "Lower Right ( %f, %f)", &xmax, &ymin)
+		}
+	}
+	if xmin == 0 && ymin == 0 && xmax == 0 && ymax == 0 {
+		return 0, 0, 0, 0, fmt.Errorf("could not parse extent from gdalinfo")
+	}
+	return xmin, ymin, xmax, ymax, nil
+}
+
+// buildRGBA 对 bytePath 跑 gdal_trace_outline → gdal_rasterize → gdalwarp → gdal_merge_simple，
+// 把 RGB + Alpha 四通道图写到 outputPath。中间产物落在 workDir 并清理。
+// 原 bytePath 不在此函数中删除，由调用者负责。失败时不会留下半成品 outputPath。
+func buildRGBA(bytePath, outputPath, workDir string) error {
+	base := strings.TrimSuffix(filepath.Base(bytePath), filepath.Ext(bytePath))
+	maskShpBase := filepath.Join(workDir, base+"_mask")
+	maskShpPath := maskShpBase + ".shp"
+	maskTifPath := filepath.Join(workDir, base+"_mask.tif")
+	maskCropPath := filepath.Join(workDir, base+"_mask_crop.tif")
+	cropPath := filepath.Join(workDir, base+"_crop.tif")
+
+	// 1) gdal_trace_outline
+	traceArgs := []string{bytePath, "-ndv", "0", "-min-ring-area", "10000000", "-out-cs", "en", "-ogr-out", maskShpPath}
 	fmt.Printf("  [cmd] %s %s\n", findGDALTool("gdal_trace_outline"), strings.Join(traceArgs, " "))
 	traceCmd := exec.Command(findGDALTool("gdal_trace_outline"), traceArgs...)
 	traceCmd.Stdout = os.Stdout
@@ -175,7 +240,32 @@ func renewByteTIFF(bytePath, outputPath, workDir string) error {
 		return fmt.Errorf("gdal_trace_outline failed: %w", err)
 	}
 
-	warpArgs := []string{"-overwrite", "-cutline", outlinePath, "-dstnodata", "0", bytePath, maskedPath}
+	// 2) gdal_rasterize（extent 和分辨率与 byte.tif 完全一致）
+	w, h, err := getImageSize(bytePath)
+	if err != nil {
+		return err
+	}
+	xmin, ymin, xmax, ymax, err := getImageExtent(bytePath)
+	if err != nil {
+		return err
+	}
+	rastArgs := []string{
+		"-ot", "Byte", "-a_nodata", "0", "-burn", "255",
+		"-te", fmt.Sprintf("%f", xmin), fmt.Sprintf("%f", ymin), fmt.Sprintf("%f", xmax), fmt.Sprintf("%f", ymax),
+		"-ts", fmt.Sprintf("%d", w), fmt.Sprintf("%d", h),
+		maskShpPath, maskTifPath,
+	}
+	fmt.Printf("  [cmd] %s %s\n", findGDALTool("gdal_rasterize"), strings.Join(rastArgs, " "))
+	rastCmd := exec.Command(findGDALTool("gdal_rasterize"), rastArgs...)
+	rastCmd.Stdout = os.Stdout
+	rastCmd.Stderr = os.Stderr
+	rastCmd.Env = gdalEnv()
+	if err := rastCmd.Run(); err != nil {
+		return fmt.Errorf("gdal_rasterize failed: %w", err)
+	}
+
+	// 3) gdalwarp byte.tif → crop.tif
+	warpArgs := []string{"-overwrite", "-cutline", maskShpPath, "-crop_to_cutline", bytePath, cropPath, "--config", "CHECK_DISK_FREE_SPACE", "NO"}
 	fmt.Printf("  [cmd] %s %s\n", findGDALTool("gdalwarp"), strings.Join(warpArgs, " "))
 	warpCmd := exec.Command(findGDALTool("gdalwarp"), warpArgs...)
 	warpCmd.Stdout = os.Stdout
@@ -185,15 +275,37 @@ func renewByteTIFF(bytePath, outputPath, workDir string) error {
 		return fmt.Errorf("gdalwarp failed: %w", err)
 	}
 
-	renewArgs := []string{"-recover-nodata", maskedPath, outputPath}
-	fmt.Printf("  [cmd] %s %s\n", findGDALTool("pkRenew"), strings.Join(renewArgs, " "))
-	renewCmd := exec.Command(findGDALTool("pkRenew"), renewArgs...)
-	renewCmd.Stdout = os.Stdout
-	renewCmd.Stderr = os.Stderr
-	renewCmd.Env = gdalEnv()
-	if err := renewCmd.Run(); err != nil {
-		os.Remove(outputPath)
-		return fmt.Errorf("pkRenew failed: %w", err)
+	// 4) gdalwarp mask.tif → mask_crop.tif（裁到与 crop.tif 同尺寸）
+	maskWarpArgs := []string{"-overwrite", "-cutline", maskShpPath, "-crop_to_cutline", maskTifPath, maskCropPath, "--config", "CHECK_DISK_FREE_SPACE", "NO"}
+	fmt.Printf("  [cmd] %s %s\n", findGDALTool("gdalwarp"), strings.Join(maskWarpArgs, " "))
+	maskWarpCmd := exec.Command(findGDALTool("gdalwarp"), maskWarpArgs...)
+	maskWarpCmd.Stdout = os.Stdout
+	maskWarpCmd.Stderr = os.Stderr
+	maskWarpCmd.Env = gdalEnv()
+	if err := maskWarpCmd.Run(); err != nil {
+		return fmt.Errorf("gdalwarp mask failed: %w", err)
 	}
+
+	// 5) gdal_merge_simple
+	mergeArgs := []string{"-in", cropPath, "-in", maskCropPath, "-out", outputPath}
+	fmt.Printf("  [cmd] %s %s\n", findGDALTool("gdal_merge_simple"), strings.Join(mergeArgs, " "))
+	mergeCmd := exec.Command(findGDALTool("gdal_merge_simple"), mergeArgs...)
+	mergeCmd.Stdout = os.Stdout
+	mergeCmd.Stderr = os.Stderr
+	mergeCmd.Env = gdalEnv()
+	if err := mergeCmd.Run(); err != nil {
+		removeWithRetry(outputPath)
+		return fmt.Errorf("gdal_merge_simple failed: %w", err)
+	}
+
+	// 清理中间产物
+	removeWithRetry(maskShpPath)
+	removeWithRetry(maskShpBase + ".shx")
+	removeWithRetry(maskShpBase + ".dbf")
+	removeWithRetry(maskShpBase + ".prj")
+	removeWithRetry(maskShpBase + ".cpg")
+	removeWithRetry(maskTifPath)
+	removeWithRetry(cropPath)
+	removeWithRetry(maskCropPath)
 	return nil
 }

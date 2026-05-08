@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,10 +52,10 @@ type STACItem struct {
 }
 
 type STACProperties struct {
-	Datetime   string  `json:"datetime"`
-	Created    string  `json:"created"`
-	CloudCover float64 `json:"eo:cloud_cover"`
-	GranuleID  string  `json:"s2:granule_id,omitempty"`
+	Datetime   string   `json:"datetime"`
+	Created    string   `json:"created"`
+	CloudCover *float64 `json:"eo:cloud_cover,omitempty"`
+	GranuleID  string   `json:"s2:granule_id,omitempty"`
 }
 
 type AlternateLink struct {
@@ -146,7 +147,9 @@ func SearchItems(opts SearchOptions, auth Authenticator) (*STACItemCollection, e
 func FilterItemsByCloud(items []STACItem, maxCloud float64) []STACItem {
 	var filtered []STACItem
 	for _, item := range items {
-		if item.Properties.CloudCover <= maxCloud {
+		// 缺失 cloud_cover 字段时按通过处理(乐观语义)。SearchItems 已在
+		// 服务端用 query 过滤,本地是双重保险,字段缺失不应排除观测。
+		if item.Properties.CloudCover == nil || *item.Properties.CloudCover <= maxCloud {
 			filtered = append(filtered, item)
 		}
 	}
@@ -164,65 +167,21 @@ func SaveKML(item STACItem, destDir string) (string, error) {
 		return kmlPath, nil
 	}
 
-	ring := item.Geometry.Coordinates[0]
-	var coords strings.Builder
-	for _, p := range ring {
-		if len(p) >= 2 {
-			fmt.Fprintf(&coords, "%f,%f,0 ", p[0], p[1])
-		}
-	}
-
-	var extData strings.Builder
-	extData.WriteString("      <ExtendedData>\n")
-	writeData := func(name, value string) {
-		if value != "" {
-			fmt.Fprintf(&extData, "        <Data name=\"%s\"><value>%s</value></Data>\n", name, value)
-		}
-	}
-	writeData("id", item.ID)
-	writeData("collection", item.Collection)
-	writeData("datetime", item.Properties.Datetime)
-	writeData("created", item.Properties.Created)
-	writeData("granule_id", item.Properties.GranuleID)
-	if item.Properties.CloudCover > 0 {
-		fmt.Fprintf(&extData, "        <Data name=\"cloud_cover\"><value>%.2f</value></Data>\n", item.Properties.CloudCover)
+	var fields []kmlField
+	fields = append(fields, kmlField{Name: "id", Value: item.ID})
+	fields = append(fields, kmlField{Name: "collection", Value: item.Collection})
+	fields = append(fields, kmlField{Name: "datetime", Value: item.Properties.Datetime})
+	fields = append(fields, kmlField{Name: "created", Value: item.Properties.Created})
+	fields = append(fields, kmlField{Name: "granule_id", Value: item.Properties.GranuleID})
+	if item.Properties.CloudCover != nil {
+		fields = append(fields, kmlField{Name: "cloud_cover", Value: fmt.Sprintf("%.2f", *item.Properties.CloudCover)})
 	}
 	if len(item.BBox) == 4 {
-		fmt.Fprintf(&extData, "        <Data name=\"bbox\"><value>%.6f,%.6f,%.6f,%.6f</value></Data>\n", item.BBox[0], item.BBox[1], item.BBox[2], item.BBox[3])
+		fields = append(fields, kmlField{Name: "bbox", Value: fmt.Sprintf("%.6f,%.6f,%.6f,%.6f", item.BBox[0], item.BBox[1], item.BBox[2], item.BBox[3])})
 	}
-	extData.WriteString("      </ExtendedData>")
 
-	kml := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
-    <Style id="polyStyle">
-      <LineStyle>
-        <color>ff0000ff</color>
-        <width>2</width>
-      </LineStyle>
-      <PolyStyle>
-        <color>7f0000ff</color>
-        <fill>1</fill>
-        <outline>1</outline>
-      </PolyStyle>
-    </Style>
-    <Placemark>
-      <name>%s</name>
-      <styleUrl>#polyStyle</styleUrl>
-%s
-      <Polygon>
-        <outerBoundaryIs>
-          <LinearRing>
-            <coordinates>%s</coordinates>
-          </LinearRing>
-        </outerBoundaryIs>
-      </Polygon>
-    </Placemark>
-  </Document>
-</kml>`, item.ID, extData.String(), strings.TrimSpace(coords.String()))
-
-	if err := os.WriteFile(kmlPath, []byte(kml), 0644); err != nil {
-		return "", fmt.Errorf("write kml: %w", err)
+	if err := writeKMLFile(kmlPath, item.ID, item.Geometry.Coordinates[0], fields); err != nil {
+		return "", err
 	}
 	fmt.Printf("  [saved] %s\n", item.ID+".kml")
 	return kmlPath, nil
@@ -328,107 +287,21 @@ func DownloadAsset(asset Asset, destDir string, itemID string, bandName string, 
 	filename := fmt.Sprintf("%s_%s.tif", itemID, bandName)
 	destPath := filepath.Join(destDir, filename)
 
-	var offset int64
-	if info, err := os.Stat(destPath); err == nil {
-		offset = info.Size()
-	}
-
 	url := resolveDownloadURL(asset)
 	client := &http.Client{Timeout: DownloadTimeout}
-	req, err := http.NewRequest("GET", url, nil)
+	label := fmt.Sprintf("%s/%s", itemID, bandName)
+	finalSize, total, skipped, err := resumableDownload(context.Background(), client, url, auth, destPath, label, 0)
 	if err != nil {
-		return "", false, fmt.Errorf("create request: %w", err)
+		return "", false, err
 	}
-	if offset > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-	}
-	if err := auth.Apply(req); err != nil {
-		return "", false, fmt.Errorf("authenticate request: %w", err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", false, fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		total := resp.ContentLength
-		if offset > 0 {
-			if total > 0 && offset == total {
-				resp.Body.Close()
-				return destPath, true, nil
-			}
-			os.Remove(destPath)
-			offset = 0
-		}
-		f, err := os.Create(destPath)
-		if err != nil {
-			return "", false, fmt.Errorf("create file: %w", err)
-		}
-		defer f.Close()
-
-		pr := &progressReader{r: resp.Body, total: total, current: 0, label: fmt.Sprintf("%s/%s", itemID, bandName)}
-		if total > 0 {
-			fmt.Fprintf(os.Stderr, "  [downloading] %s (%s)\n", filename, formatBytes(total))
-		} else {
-			fmt.Fprintf(os.Stderr, "  [downloading] %s (unknown size)\n", filename)
-		}
-
-		_, err = io.Copy(f, pr)
-		if err != nil {
-			os.Remove(destPath)
-			return "", false, fmt.Errorf("write file: %w", err)
-		}
-		if total > 0 {
-			info, err := os.Stat(destPath)
-			if err != nil {
-				os.Remove(destPath)
-				return "", false, fmt.Errorf("stat file: %w", err)
-			}
-			if info.Size() != total {
-				os.Remove(destPath)
-				return "", false, fmt.Errorf("size mismatch: got %s, expected %s", formatBytes(info.Size()), formatBytes(total))
-			}
-		}
-		return destPath, false, nil
-
-	case http.StatusPartialContent:
-		total := parseContentRangeTotal(resp.Header.Get("Content-Range"))
-		if total == 0 {
-			total = offset + resp.ContentLength
-		}
-		f, err := os.OpenFile(destPath, os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			return "", false, fmt.Errorf("open file for append: %w", err)
-		}
-		defer f.Close()
-
-		pr := &progressReader{r: resp.Body, total: total, current: offset, label: fmt.Sprintf("%s/%s", itemID, bandName)}
-		fmt.Fprintf(os.Stderr, "  [resuming] %s (%s / %s, %s remaining)\n", filename, formatBytes(offset), formatBytes(total), formatBytes(total-offset))
-
-		_, err = io.Copy(f, pr)
-		if err != nil {
-			return "", false, fmt.Errorf("write file: %w", err)
-		}
-		info, err := os.Stat(destPath)
-		if err != nil {
-			os.Remove(destPath)
-			return "", false, fmt.Errorf("stat file: %w", err)
-		}
-		if info.Size() != total {
-			os.Remove(destPath)
-			return "", false, fmt.Errorf("size mismatch: got %s, expected %s", formatBytes(info.Size()), formatBytes(total))
-		}
-		return destPath, false, nil
-
-	case http.StatusRequestedRangeNotSatisfiable:
+	if skipped {
 		return destPath, true, nil
-
-	default:
-		return "", false, fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
 	}
+	if total > 0 && finalSize != total {
+		os.Remove(destPath)
+		return "", false, fmt.Errorf("size mismatch: got %s, expected %s", formatBytes(finalSize), formatBytes(total))
+	}
+	return destPath, false, nil
 }
 
 func downloadWorker(tasks <-chan downloadTask, results chan<- downloadResult) {
@@ -458,7 +331,11 @@ func PrintItemSummary(items []STACItem) {
 		if dt == "" {
 			dt = item.Properties.Created
 		}
-		fmt.Printf("- %s | Date: %s | Cloud: %.1f%% | BBox: %v\n",
-			item.ID, dt, item.Properties.CloudCover, item.BBox)
+		cloudStr := "N/A"
+		if item.Properties.CloudCover != nil {
+			cloudStr = fmt.Sprintf("%.1f%%", *item.Properties.CloudCover)
+		}
+		fmt.Printf("- %s | Date: %s | Cloud: %s | BBox: %v\n",
+			item.ID, dt, cloudStr, item.BBox)
 	}
 }

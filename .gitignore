@@ -29,6 +29,9 @@ Thumbs.db
 # Go
 vendor/
 
+# Build artifacts
+build/
+dist/
 
 # Secret
 settings.json

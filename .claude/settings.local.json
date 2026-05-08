@@ -62,7 +62,10 @@
       "Bash(python3 -c ' *)",
       "Bash(gofmt *)",
       "Bash(python3 -c 'import json,sys; d=json.load\\(sys.stdin\\); d[\"auth\"] = {\"username\": \"[redacted]\" if d.get\\(\"auth\"\\) else None, \"password\": \"[redacted]\" if d.get\\(\"auth\"\\) else None} if d.get\\(\"auth\"\\) else None; print\\(json.dumps\\(d, indent=2\\)\\)')",
-      "Bash(rm -f sentinel2_data/*_byte_renew.tif && ./sentinel2-go -config config.json -dest ./sentinel2_data 2>&1 | grep -E '\\\\[\\(cmd|reuse|renew|skip\\)\\\\]|Creating output|Done\\\\.')"
+      "Bash(rm -f sentinel2_data/*_byte_renew.tif && ./sentinel2-go -config config.json -dest ./sentinel2_data 2>&1 | grep -E '\\\\[\\(cmd|reuse|renew|skip\\)\\\\]|Creating output|Done\\\\.')",
+      "Bash(cp \"D:/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalwarp.exe\" \"D:/Dev/maps/sentinel2-go/\")",
+      "Bash(cp \"D:/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdal_trace_outline.exe\" \"D:/Dev/maps/sentinel2-go/\")",
+      "Bash(cp \"D:/Dev/toolchain/gdal353_msvc142_x64_v3/bin/pkRenew.exe\" \"D:/Dev/maps/sentinel2-go/\")"
     ],
     "additionalDirectories": [
       "/tmp",

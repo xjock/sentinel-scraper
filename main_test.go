@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+func f64ptr(v float64) *float64 { return &v }
+
 func TestLoadConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -73,20 +75,21 @@ func TestLoadConfig(t *testing.T) {
 
 func TestFilterItemsByCloud(t *testing.T) {
 	items := []STACItem{
-		{ID: "a", Properties: STACProperties{CloudCover: 5}},
-		{ID: "b", Properties: STACProperties{CloudCover: 20}},
-		{ID: "c", Properties: STACProperties{CloudCover: 21}},
-		{ID: "d", Properties: STACProperties{CloudCover: 0}},
+		{ID: "a", Properties: STACProperties{CloudCover: f64ptr(5)}},
+		{ID: "b", Properties: STACProperties{CloudCover: f64ptr(20)}},
+		{ID: "c", Properties: STACProperties{CloudCover: f64ptr(21)}},
+		{ID: "d", Properties: STACProperties{CloudCover: f64ptr(0)}},
+		{ID: "e", Properties: STACProperties{CloudCover: nil}},
 	}
 	filtered := FilterItemsByCloud(items, 20)
-	if len(filtered) != 3 {
-		t.Errorf("expected 3 items, got %d", len(filtered))
+	if len(filtered) != 4 {
+		t.Errorf("expected 4 items, got %d", len(filtered))
 	}
 	ids := make([]string, len(filtered))
 	for i, it := range filtered {
 		ids[i] = it.ID
 	}
-	want := []string{"a", "b", "d"}
+	want := []string{"a", "b", "d", "e"}
 	for i, id := range want {
 		if ids[i] != id {
 			t.Errorf("expected item %s at index %d, got %s", id, i, ids[i])
@@ -125,7 +128,7 @@ func TestSearchItems(t *testing.T) {
 					Type: "Feature",
 					Properties: STACProperties{
 						Datetime:   "2025-01-05T00:00:00Z",
-						CloudCover: 10,
+						CloudCover: f64ptr(10),
 					},
 					Assets: map[string]Asset{
 						"red": {Href: srv.URL + "/red.tif"},

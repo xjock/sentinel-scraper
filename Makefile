@@ -4,7 +4,7 @@ BINARY := sentinel2-go
 OUTPUT := sentinel2_data
 
 build:
-	go build -o $(BINARY) main.go
+	go build -o $(BINARY) .
 
 run: build
 	./$(BINARY)
