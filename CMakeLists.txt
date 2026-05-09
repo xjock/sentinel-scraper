@@ -43,7 +43,7 @@ set(GDAL_TOOLCHAIN_DIR "" CACHE PATH
     "Example: D:/Dev/toolchain/gdal353_msvc142_x64_v3")
 
 if(GDAL_TOOLCHAIN_DIR)
-    if(NOT IS_DIRECTORY ${GDAL_TOOLCHAIN_DIR})
+    if(NOT IS_DIRECTORY "${GDAL_TOOLCHAIN_DIR}")
         message(FATAL_ERROR "GDAL_TOOLCHAIN_DIR does not exist: ${GDAL_TOOLCHAIN_DIR}")
     endif()
 
@@ -75,10 +75,10 @@ if(GDAL_TOOLCHAIN_DIR)
     endif()
 
     # PROJ data
-    if(EXISTS ${GDAL_TOOLCHAIN_DIR}/share/proj)
-        set(GDAL_PROJ_DATA ${GDAL_TOOLCHAIN_DIR}/share/proj)
-    elseif(EXISTS ${GDAL_BIN_DIR}/../share/proj)
-        get_filename_component(GDAL_PROJ_DATA ${GDAL_BIN_DIR}/../share/proj ABSOLUTE)
+    if(EXISTS "${GDAL_TOOLCHAIN_DIR}/share/proj")
+        set(GDAL_PROJ_DATA "${GDAL_TOOLCHAIN_DIR}/share/proj")
+    elseif(EXISTS "${GDAL_BIN_DIR}/../share/proj")
+        get_filename_component(GDAL_PROJ_DATA "${GDAL_BIN_DIR}/../share/proj" ABSOLUTE)
     endif()
 
     if(GDAL_PROJ_DATA)
