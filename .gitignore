@@ -15,6 +15,13 @@ sentinel2_stretch_test/
 share/
 *.tif
 
+# Allow bundled assets for embed
+internal/bundle/assets_windows/
+internal/bundle/assets_windows/**/*.dll
+internal/bundle/assets_windows/**/*.exe
+internal/bundle/assets_windows/share/
+internal/bundle/assets_windows/share/**/*
+
 
 # OS files
 .DS_Store
@@ -33,6 +40,7 @@ vendor/
 # Build artifacts
 build/
 dist/
+*.tar.gz
 
 # Secret
 settings.json
