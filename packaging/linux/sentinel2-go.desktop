@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Sentinel-2 Scraper
+Comment=Download and process Sentinel-2 L2A satellite imagery
+Exec=sentinel2-scraper
+Icon=sentinel2-go
+Type=Application
+Terminal=true
+Categories=Science;Geoscience;

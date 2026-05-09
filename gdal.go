@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"sentinel2-go/internal/bundle"
 )
 
 // removeWithRetry 在 Windows 上 GDAL 进程刚退出时文件句柄可能未立即释放，
@@ -29,6 +31,13 @@ func findGDALTool(name string) string {
 			return absPath
 		}
 	}
+
+	if p, err := bundle.ToolPath(name); err == nil && p != "" {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
 	return name
 }
 
@@ -37,7 +46,15 @@ func gdalEnv() []string {
 	if _, err := os.Stat("share/proj"); err == nil {
 		projDir, _ := filepath.Abs("share/proj")
 		env = append(env, "PROJ_DATA="+projDir)
-	} else if exePath, err := os.Executable(); err == nil {
+		return env
+	}
+	if p, err := bundle.ProjDataPath(); err == nil && p != "" {
+		if _, err := os.Stat(p); err == nil {
+			env = append(env, "PROJ_DATA="+p)
+			return env
+		}
+	}
+	if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)
 		projPath := filepath.Join(exeDir, "share", "proj")
 		if _, err := os.Stat(projPath); err == nil {

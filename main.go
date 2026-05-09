@@ -7,12 +7,15 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"sentinel2-go/internal/bundle"
 )
 
 var (
 	EarthSearchURL  = "https://earth-search.aws.element84.com/v1"
 	Collection      = "sentinel-2-l2a"
 	DownloadTimeout = 10 * time.Minute
+	version         = "dev"
 )
 
 func main() {
@@ -20,7 +23,18 @@ func main() {
 	destDir := flag.String("dest", "./sentinel2_data", "Destination directory for downloaded files")
 	setupAuth := flag.Bool("setup-auth", false, "Interactive authentication setup wizard (CLI)")
 	setupFlag := flag.Bool("setup", false, "Open web-based setup wizard")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(version)
+		return
+	}
+
+	if _, err := bundle.EnsureExtracted(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to extract bundled assets: %v\n", err)
+		os.Exit(1)
+	}
 
 	if *setupAuth {
 		setupAuthWizard()
