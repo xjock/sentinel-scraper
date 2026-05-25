@@ -67,7 +67,12 @@ func gdalEnv() []string {
 	return env
 }
 
-func BuildRGB(destDir string, itemID string) error {
+func BuildRGB(destDir string, itemID string, sat SatelliteType) error {
+	cfg := satelliteConfigs[sat]
+	if !cfg.SupportsRGB {
+		return nil
+	}
+
 	byteName := fmt.Sprintf("%s_byte.tif", itemID)
 	bytePath := filepath.Join(destDir, byteName)
 	rgbaName := fmt.Sprintf("%s_rgba.tif", itemID)

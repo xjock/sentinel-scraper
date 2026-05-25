@@ -72,17 +72,32 @@ func queryODataProducts(auth Authenticator, cfg *Config) ([]odataProduct, error)
 		west, south, east, south, east, north, west, north, west, south,
 	)
 
+	sat := ParseSatelliteType(cfg.Collection)
+	if cfg.Satellite != "" {
+		sat = SatelliteType(cfg.Satellite)
+	}
+	sc := satelliteConfigs[sat]
+
 	filters := []string{
-		"Collection/Name eq 'SENTINEL-2'",
-		"Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType' and att/OData.CSC.StringAttribute/Value eq 'S2MSI2A')",
+		fmt.Sprintf("Collection/Name eq '%s'", sc.ODataCollection),
+		fmt.Sprintf("Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType' and att/OData.CSC.StringAttribute/Value eq '%s')", sc.ODataProductType),
 		fmt.Sprintf("ContentDate/Start gt %sT00:00:00.000Z", cfg.StartDate),
 		fmt.Sprintf("ContentDate/Start lt %sT23:59:59.000Z", cfg.EndDate),
 	}
-	if cfg.MaxCloud > 0 {
-		filters = append(filters, fmt.Sprintf(
-			"Attributes/OData.CSC.DoubleAttribute/any(att:att/Name eq 'cloudCover' and att/OData.CSC.DoubleAttribute/Value lt %.1f)",
-			cfg.MaxCloud,
-		))
+	if sc.NeedsCloudFilter {
+		if cfg.MinCloud > 0 || cfg.MaxCloud > 0 {
+			cloudFilters := []string{"att/Name eq 'cloudCover'"}
+			if cfg.MinCloud > 0 {
+				cloudFilters = append(cloudFilters, fmt.Sprintf("att/OData.CSC.DoubleAttribute/Value ge %.1f", cfg.MinCloud))
+			}
+			if cfg.MaxCloud > 0 {
+				cloudFilters = append(cloudFilters, fmt.Sprintf("att/OData.CSC.DoubleAttribute/Value lt %.1f", cfg.MaxCloud))
+			}
+			filters = append(filters, fmt.Sprintf(
+				"Attributes/OData.CSC.DoubleAttribute/any(%s)",
+				strings.Join(cloudFilters, " and "),
+			))
+		}
 	}
 	filters = append(filters, fmt.Sprintf(
 		"OData.CSC.Intersects(area=geography'SRID=4326;%s')", polygon,
@@ -255,14 +270,21 @@ func runODataFlow(cfg *Config, auth Authenticator, destDir string) {
 		}
 	}
 
-	fmt.Println("\n=== Processing RGB ===")
-	for _, p := range products {
-		zipPath := filepath.Join(destDir, p.Name+".zip")
-		if _, err := os.Stat(zipPath); err != nil {
-			continue
-		}
-		if err := processODataProduct(zipPath, destDir, p.Name); err != nil {
-			fmt.Fprintf(os.Stderr, "  [rgb skip] %s: %v\n", p.Name, err)
+	sat := ParseSatelliteType(cfg.Collection)
+	if cfg.Satellite != "" {
+		sat = SatelliteType(cfg.Satellite)
+	}
+	sc := satelliteConfigs[sat]
+	if sc.SupportsRGB {
+		fmt.Println("\n=== Processing RGB ===")
+		for _, p := range products {
+			zipPath := filepath.Join(destDir, p.Name+".zip")
+			if _, err := os.Stat(zipPath); err != nil {
+				continue
+			}
+			if err := processODataProduct(zipPath, destDir, p.Name, sat); err != nil {
+				fmt.Fprintf(os.Stderr, "  [rgb skip] %s: %v\n", p.Name, err)
+			}
 		}
 	}
 
@@ -348,7 +370,12 @@ func extractRGBJP2s(zipPath, outDir string) (string, string, string, error) {
 // processODataProduct 把整景 zip 解压出 R/G/B 波段，合成拉伸成 byte 格式 tif，
 // 再跑 gdal_trace_outline → gdal_rasterize → gdalwarp → gdal_merge_simple 合成 RGBA，
 // 最终目录下保留原始 .zip 和 *_rgba.tif。rgba 失败时回退保留 *_byte.tif。
-func processODataProduct(zipPath, destDir, productName string) error {
+func processODataProduct(zipPath, destDir, productName string, sat SatelliteType) error {
+	sc := satelliteConfigs[sat]
+	if !sc.SupportsRGB {
+		return nil
+	}
+
 	bytePath := filepath.Join(destDir, productName+"_byte.tif")
 	rgbaPath := filepath.Join(destDir, productName+"_rgba.tif")
 

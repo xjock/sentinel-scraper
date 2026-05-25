@@ -81,7 +81,7 @@ func TestFilterItemsByCloud(t *testing.T) {
 		{ID: "d", Properties: STACProperties{CloudCover: f64ptr(0)}},
 		{ID: "e", Properties: STACProperties{CloudCover: nil}},
 	}
-	filtered := FilterItemsByCloud(items, 20)
+	filtered := FilterItemsByCloud(items, 0, 20, SatS2L2A)
 	if len(filtered) != 4 {
 		t.Errorf("expected 4 items, got %d", len(filtered))
 	}
@@ -387,5 +387,160 @@ func TestDownloadWorker_Concurrent(t *testing.T) {
 	}
 	if okCount != total {
 		t.Errorf("expected %d successful downloads, got %d", total, okCount)
+	}
+}
+
+func TestParseSatelliteType(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected SatelliteType
+	}{
+		{"sentinel-2-l2a", SatS2L2A},
+		{"sentinel-2", SatS2L2A},
+		{"sentinel-1-grd", SatS1GRD},
+		{"sentinel1_grd", SatS1GRD},
+		{"SENTINEL1_GRD", SatS1GRD},
+		{"sentinel-1-slc", SatS1SLC},
+		{"sentinel1_slc", SatS1SLC},
+		{"SENTINEL1_SLC", SatS1SLC},
+		{"", SatS2L2A},
+		{"unknown", SatS2L2A},
+	}
+	for _, tt := range tests {
+		got := ParseSatelliteType(tt.input)
+		if got != tt.expected {
+			t.Errorf("ParseSatelliteType(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestFilterItemsByCloud_Range(t *testing.T) {
+	items := []STACItem{
+		{ID: "a", Properties: STACProperties{CloudCover: f64ptr(5)}},
+		{ID: "b", Properties: STACProperties{CloudCover: f64ptr(15)}},
+		{ID: "c", Properties: STACProperties{CloudCover: f64ptr(25)}},
+		{ID: "d", Properties: STACProperties{CloudCover: f64ptr(0)}},
+		{ID: "e", Properties: STACProperties{CloudCover: nil}},
+	}
+	filtered := FilterItemsByCloud(items, 10, 20, SatS2L2A)
+	if len(filtered) != 2 {
+		t.Errorf("expected 2 items, got %d", len(filtered))
+	}
+	ids := make([]string, len(filtered))
+	for i, it := range filtered {
+		ids[i] = it.ID
+	}
+	want := []string{"b", "e"}
+	for i, id := range want {
+		if ids[i] != id {
+			t.Errorf("expected item %s at index %d, got %s", id, i, ids[i])
+		}
+	}
+}
+
+func TestFilterItemsByCloud_S1Skip(t *testing.T) {
+	items := []STACItem{
+		{ID: "a", Properties: STACProperties{CloudCover: f64ptr(95)}},
+		{ID: "b", Properties: STACProperties{CloudCover: f64ptr(5)}},
+	}
+	filtered := FilterItemsByCloud(items, 0, 10, SatS1GRD)
+	if len(filtered) != 2 {
+		t.Errorf("expected 2 items (S1 skips cloud filter), got %d", len(filtered))
+	}
+}
+
+func TestSearchItems_CloudRange(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		queryParam := q.Get("query")
+		if !strings.Contains(queryParam, `"gte":10`) || !strings.Contains(queryParam, `"lte":20`) {
+			t.Errorf("expected cloud range query, got %s", queryParam)
+		}
+		resp := STACItemCollection{
+			Type: "FeatureCollection",
+			Features: []STACItem{
+				{ID: "S2A_20250105", Type: "Feature", Properties: STACProperties{Datetime: "2025-01-05T00:00:00Z", CloudCover: f64ptr(15)}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/geo+json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	oldURL := EarthSearchURL
+	EarthSearchURL = srv.URL
+	defer func() { EarthSearchURL = oldURL }()
+
+	opts := SearchOptions{
+		Bbox:      []float64{116.2, 39.8, 116.6, 40.0},
+		StartDate: "2025-01-01",
+		EndDate:   "2025-01-15",
+		Limit:     5,
+		MinCloud:  10,
+		MaxCloud:  20,
+	}
+	collection, err := SearchItems(opts, NoOpAuth{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(collection.Features) != 1 {
+		t.Fatalf("expected 1 feature, got %d", len(collection.Features))
+	}
+}
+
+func TestSearchItems_S1NoCloudFilter(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		queryParam := q.Get("query")
+		if strings.Contains(queryParam, "eo:cloud_cover") {
+			t.Errorf("S1 should not send cloud filter, got %s", queryParam)
+		}
+		resp := STACItemCollection{
+			Type:     "FeatureCollection",
+			Features: []STACItem{{ID: "S1A_20250105", Type: "Feature", Properties: STACProperties{Datetime: "2025-01-05T00:00:00Z"}}},
+		}
+		w.Header().Set("Content-Type", "application/geo+json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	oldURL := EarthSearchURL
+	EarthSearchURL = srv.URL
+	defer func() { EarthSearchURL = oldURL }()
+
+	opts := SearchOptions{
+		Bbox:      []float64{116.2, 39.8, 116.6, 40.0},
+		StartDate: "2025-01-01",
+		EndDate:   "2025-01-15",
+		Limit:     5,
+		MaxCloud:  20,
+		Satellite: SatS1GRD,
+	}
+	collection, err := SearchItems(opts, NoOpAuth{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(collection.Features) != 1 {
+		t.Fatalf("expected 1 feature, got %d", len(collection.Features))
+	}
+}
+
+func TestResolveAssetKey_S1(t *testing.T) {
+	key := resolveAssetKey("vv", "https://stac.dataspace.copernicus.eu/v1", SatS1GRD)
+	if key != "vv" {
+		t.Errorf("expected vv, got %s", key)
+	}
+	key = resolveAssetKey("vh", "https://earth-search.aws.element84.com/v1", SatS1GRD)
+	if key != "vh" {
+		t.Errorf("expected vh, got %s", key)
+	}
+}
+
+func TestBuildRGB_S1Skip(t *testing.T) {
+	err := BuildRGB("", "S1A_TEST", SatS1GRD)
+	if err != nil {
+		t.Errorf("S1 should skip RGB without error, got %v", err)
 	}
 }

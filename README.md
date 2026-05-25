@@ -8,10 +8,11 @@
 
 ## 特性
 
-- **三种数据源**
+- **三种数据源 + Sentinel-1 SAR 支持**
   - Earth Search STAC（AWS 公开，无需认证）
   - CDSE STAC（哥白尼数据空间，按波段 COG）
   - CDSE OData（哥白尼数据空间，整景 SAFE ZIP）
+  - Sentinel-1 GRD / SLC（SAR 雷达数据，VV/VH 极化，不受云影响）
 - **配置向导**：首次运行自动打开浏览器，也支持终端 SSH 模式
 - **友好波段名**：`red` / `green` / `blue` / `nir` 等，自动映射到各数据源对应的资源键
 - **断点续传**：基于 HTTP `Range`，已下载文件自动跳过
@@ -71,21 +72,23 @@ go build -o sentinel2-scraper .
 
 ### 数据源对比
 
-| 维度 | Earth Search STAC | CDSE STAC | CDSE OData |
-|------|-------------------|-----------|------------|
-| **下载粒度** | 单波段 COG（50–200 MB / 波段） | 单波段 COG（50–200 MB / 波段） | 整景 ZIP（500 MB–1 GB+） |
-| **认证** | 无 | 需 CDSE 账号 | 需 CDSE 账号 |
-| **速度** | 快（AWS CloudFront CDN） | 中等（欧盟直链） | 慢（实时打包 + 大文件） |
-| **国内访问** | 多数情况下需翻墙 | 多数情况下需翻墙 | 大概率免翻墙 |
-| **断点续传** | ✅ | ✅ | ✅ |
-| **RGB 合成** | ✅ 自动 | ✅ 自动 | ✅ 自动（解压 R10m B02/B03/B04 后合成） |
-| **KML 输出** | ✅ | ✅ | ✅ |
+| 维度 | Earth Search STAC | CDSE STAC | CDSE OData | Sentinel-1 |
+|------|-------------------|-----------|------------|------------|
+| **下载粒度** | 单波段 COG（50–200 MB / 波段） | 单波段 COG（50–200 MB / 波段） | 整景 ZIP（500 MB–1 GB+） | 单波段 COG / 整景 ZIP |
+| **认证** | 无 | 需 CDSE 账号 | 需 CDSE 账号 | 无 / 需 CDSE 账号 |
+| **速度** | 快（AWS CloudFront CDN） | 中等（欧盟直链） | 慢（实时打包 + 大文件） | 中等 |
+| **国内访问** | 多数情况下需翻墙 | 多数情况下需翻墙 | 大概率免翻墙 | 大概率免翻墙（OData） |
+| **断点续传** | ✅ | ✅ | ✅ | ✅ |
+| **RGB 合成** | ✅ 自动 | ✅ 自动 | ✅ 自动（解压 R10m B02/B03/B04 后合成） | ❌ SAR 不做 RGB |
+| **云量过滤** | ✅ | ✅ | ✅ | ❌ SAR 不受云影响 |
+| **KML 输出** | ✅ | ✅ | ✅ | ✅ |
 
 **选型建议：**
 
 - **网络好，追求速度** → Earth Search STAC（默认，最快）
 - **Earth Search 连不上，或需要官方源** → CDSE STAC（按波段）
 - **需要完整 SAFE 产品（含全部波段 + 元数据）或国内免翻墙** → CDSE OData
+- **需要 SAR 雷达数据（全天候、穿透云层）** → Sentinel-1 GRD/SLC
 
 ### `settings.json` 示例
 
@@ -112,8 +115,10 @@ go build -o sentinel2-scraper .
   "bbox": [116.2, 39.8, 116.6, 40.0],
   "start_date": "2026-04-01",
   "end_date": "2026-04-15",
+  "min_cloud": 0,
   "max_cloud": 20.0,
   "bands": ["red", "green", "blue", "nir"],
+  "satellite": "sentinel-2-l2a",
   "limit": 20,
   "max_workers": 4,
   "max_retries": 3
@@ -122,11 +127,15 @@ go build -o sentinel2-scraper .
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
+| 字段 | 类型 | 说明 |
+|------|------|------|
 | `bbox` | `[float64]` | 边界框 `[西, 南, 东, 北]` |
 | `start_date` | `string` | 起始日期 `YYYY-MM-DD` |
 | `end_date` | `string` | 结束日期 `YYYY-MM-DD` |
-| `max_cloud` | `float64` | 最大云量百分比（0–100） |
-| `bands` | `[string]` | 待下载的波段列表（友好名称） |
+| `min_cloud` | `float64` | 最小云量百分比（0–100，仅 Sentinel-2） |
+| `max_cloud` | `float64` | 最大云量百分比（0–100，仅 Sentinel-2） |
+| `bands` | `[string]` | 待下载的波段/极化列表（友好名称） |
+| `satellite` | `string` | 卫星类型：`sentinel-2-l2a` / `sentinel-1-grd` / `sentinel-1-slc` |
 | `limit` | `int` | STAC 查询返回上限（默认 20） |
 | `max_workers` | `int` | 并发下载线程数（默认 4） |
 | `max_retries` | `int` | 单文件失败重试次数（默认 3） |
@@ -198,9 +207,20 @@ go build -o sentinel2-scraper .
 
 > 例如：`"bands": ["red", "green", "blue"]` 在 CDSE STAC 模式下会自动下载 `B04_10m` / `B03_10m` / `B02_10m`，但保存为 `<item>_red.tif` / `<item>_green.tif` / `<item>_blue.tif`，与 RGB 合成流程兼容。
 
+### Sentinel-1 极化方式
+
+| 友好名称 | STAC Asset 键 | 说明 |
+|----------|---------------|------|
+| `vv` | `vv` | 垂直发射 / 垂直接收 |
+| `vh` | `vh` | 垂直发射 / 水平接收 |
+| `hh` | `hh` | 水平发射 / 水平接收 |
+| `hv` | `hv` | 水平发射 / 垂直接收 |
+
+> Sentinel-1 数据不受云影响，不支持云量过滤和 RGB 合成。
+
 ## 输出
 
-### STAC 模式（Earth Search / CDSE STAC）
+### STAC 模式 — Sentinel-2（Earth Search / CDSE STAC）
 
 ```
 sentinel2_data/
@@ -214,6 +234,18 @@ sentinel2_data/
 ```
 
 CDSE STAC 的源文件为 JPEG 2000（`.jp2`），GDAL 工具可直接读取。RGB 输出统一拉伸为 8-bit GeoTIFF（固定 0–3000 → 0–255），并通过 `gdal_trace_outline` + `gdalwarp` + `gdal_merge_simple` 生成带 Alpha 通道的 RGBA 影像，自动剔除影像四周的 nodata 黑边。
+
+### STAC 模式 — Sentinel-1（Earth Search / CDSE STAC）
+
+```
+sentinel2_data/
+  S1A_IW_GRDH_1SDV_20250105_030000_039A_vv.tif
+  S1A_IW_GRDH_1SDV_20250105_030000_039A_vh.tif
+  S1A_IW_GRDH_1SDV_20250105_030000_039A.kml
+  ...
+```
+
+Sentinel-1 SAR 数据直接下载为原始极化文件，**不做 RGB 合成**。
 
 ### OData 模式（CDSE OData）
 
@@ -294,6 +326,27 @@ Windows 用户可使用仓库中已附带的 GDAL 二进制（`gdal305.dll`、`p
 - **首选 Earth Search**：速度最快，AWS CloudFront 全球加速；但部分网络可能不通
 - **Earth Search 不可达** → 切到 **CDSE STAC**：按波段下载，文件较小
 - **国内免翻墙 / 需要完整 SAFE 产品** → **CDSE OData**：整景 ZIP，慢但完整
+- **需要 SAR 雷达数据（全天候、穿透云层）** → **Sentinel-1**：选择 GRD 或 SLC
+
+**Q：Sentinel-1 和 Sentinel-2 有什么区别？**
+
+- **Sentinel-2**：多光谱光学影像，受云影响，适合做植被监测、土地利用等
+- **Sentinel-1**：C 波段 SAR 雷达，**不受云影响**，适合做地表形变监测、洪水监测、海上目标检测等
+- Sentinel-1 不需要云量过滤，也不做 RGB 合成
+
+**Q：如何下载 Sentinel-1 数据？**
+
+在 `config.json` 中设置 `"satellite": "sentinel-1-grd"`（或 `"sentinel-1-slc"`），`"bands": ["vv", "vh"]`：
+
+```json
+{
+  "satellite": "sentinel-1-grd",
+  "bands": ["vv", "vh"],
+  "bbox": [116.2, 39.8, 116.6, 40.0],
+  "start_date": "2026-04-01",
+  "end_date": "2026-04-15"
+}
+```
 
 **Q：下载失败 / 超时怎么办？**
 

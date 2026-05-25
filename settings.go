@@ -51,6 +51,23 @@ func promptCredentials(existing *Settings) (string, string) {
 	return username, password
 }
 
+func promptSatellite() SatelliteType {
+	fmt.Println("\n选择卫星数据类型:")
+	fmt.Println("  1) Sentinel-2 L2A（多光谱，支持云量过滤和 RGB 合成）")
+	fmt.Println("  2) Sentinel-1 GRD（SAR 雷达，不受云影响，VV/VH 极化）")
+	fmt.Println("  3) Sentinel-1 SLC（SAR 雷达，不受云影响，VV/VH 极化）")
+	fmt.Println()
+	satChoice := readLine("选择 [1-3]: ")
+	switch satChoice {
+	case "2":
+		return SatS1GRD
+	case "3":
+		return SatS1SLC
+	default:
+		return SatS2L2A
+	}
+}
+
 func setupAuthWizard() {
 	existing, _ := loadSettings()
 
@@ -67,23 +84,38 @@ func setupAuthWizard() {
 
 	switch choice {
 	case "1":
-		if err := os.Remove(settingsPath()); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "删除配置失败: %v\n", err)
+		sat := promptSatellite()
+		sc := satelliteConfigs[sat]
+		settings := &Settings{
+			Source:     "earth_search",
+			STACURL:    EarthSearchURL,
+			Collection: sc.Collection,
+			Satellite:  string(sat),
+		}
+		if err := saveSettings(settings); err != nil {
+			fmt.Fprintf(os.Stderr, "保存配置失败: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("\n已清除配置。")
+		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
 		fmt.Println("Earth Search 为默认数据源，无需认证。")
 
 	case "2":
+		sat := promptSatellite()
+		sc := satelliteConfigs[sat]
 		fmt.Println("\n--- CDSE STAC 配置 ---")
-		fmt.Println("按波段下载（red/green/blue/nir 等），支持断点续传和 RGB 合成。")
+		if sat == SatS2L2A {
+			fmt.Println("按波段下载（red/green/blue/nir 等），支持断点续传和 RGB 合成。")
+		} else {
+			fmt.Println("按极化下载（vv/vh 等），SAR 数据不受云影响。")
+		}
 		fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
 		fmt.Println()
 		username, password := promptCredentials(existing)
 		settings := &Settings{
 			Source:     "cdse",
 			STACURL:    "https://stac.dataspace.copernicus.eu/v1",
-			Collection: "sentinel-2-l2a",
+			Collection: sc.CDSECollection,
+			Satellite:  string(sat),
 			Auth:       &AuthConfig{Username: username, Password: password},
 		}
 		if err := saveSettings(settings); err != nil {
@@ -94,14 +126,20 @@ func setupAuthWizard() {
 		fmt.Println("文件权限: 0600（仅所有者可读写）")
 
 	case "3":
+		sat := promptSatellite()
 		fmt.Println("\n--- CDSE OData 配置 ---")
-		fmt.Println("整景 ZIP 下载（包含所有波段和元数据），适合需要完整产品的场景。")
+		if sat == SatS2L2A {
+			fmt.Println("整景 ZIP 下载（包含所有波段和元数据），适合需要完整产品的场景。")
+		} else {
+			fmt.Println("整景 ZIP 下载（SAR 原始数据），不受云影响。")
+		}
 		fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
 		fmt.Println()
 		username, password := promptCredentials(existing)
 		settings := &Settings{
-			Source: "cdse_odata",
-			Auth:   &AuthConfig{Username: username, Password: password},
+			Source:    "cdse_odata",
+			Satellite: string(sat),
+			Auth:      &AuthConfig{Username: username, Password: password},
 		}
 		if err := saveSettings(settings); err != nil {
 			fmt.Fprintf(os.Stderr, "保存配置失败: %v\n", err)
@@ -118,10 +156,12 @@ func setupAuthWizard() {
 			fmt.Println("\n错误: 地址和名称不能为空。")
 			os.Exit(1)
 		}
+		sat := ParseSatelliteType(collection)
 		settings := &Settings{
 			Source:     "custom",
 			STACURL:    stacURL,
 			Collection: collection,
+			Satellite:  string(sat),
 		}
 		if err := saveSettings(settings); err != nil {
 			fmt.Fprintf(os.Stderr, "保存配置失败: %v\n", err)
@@ -148,6 +188,7 @@ func settingsPath() string {
 
 type Settings struct {
 	Source     string      `json:"source"`
+	Satellite  string      `json:"satellite,omitempty"`
 	STACURL    string      `json:"stac_url,omitempty"`
 	Collection string      `json:"collection,omitempty"`
 	Auth       *AuthConfig `json:"auth,omitempty"`
@@ -288,7 +329,7 @@ const setupHTML = `<!DOCTYPE html>
 <body>
 <div class="container">
   <h1>sentinel2-go 数据源配置</h1>
-  <p class="desc">选择数据源和认证方式。</p>
+  <p class="desc">选择数据源、卫星类型和认证方式。</p>
   <form method="POST" action="/">
     <div class="field">
       <label for="source">数据源</label>
@@ -297,6 +338,15 @@ const setupHTML = `<!DOCTYPE html>
         <option value="cdse">CDSE STAC API（按波段下载，需翻墙）</option>
         <option value="earth_search">Earth Search STAC API（无需认证，需翻墙）</option>
         <option value="custom">自定义 STAC API</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="satellite">卫星数据类型</label>
+      <select id="satellite" name="satellite">
+        <option value="sentinel-2-l2a">Sentinel-2 L2A（多光谱，云量过滤 + RGB）</option>
+        <option value="sentinel-1-grd">Sentinel-1 GRD（SAR 雷达，VV/VH 极化）</option>
+        <option value="sentinel-1-slc">Sentinel-1 SLC（SAR 雷达，VV/VH 极化）</option>
       </select>
     </div>
 
@@ -400,15 +450,20 @@ func runSetupWizard() (*Settings, error) {
 			}
 
 			source := r.FormValue("source")
-			settings := &Settings{Source: source}
+			sat := r.FormValue("satellite")
+			if sat == "" {
+				sat = string(SatS2L2A)
+			}
+			sc := satelliteConfigs[SatelliteType(sat)]
+			settings := &Settings{Source: source, Satellite: sat}
 
 			switch source {
 			case "earth_search":
 				settings.STACURL = EarthSearchURL
-				settings.Collection = Collection
+				settings.Collection = sc.Collection
 			case "cdse":
 				settings.STACURL = "https://stac.dataspace.copernicus.eu/v1"
-				settings.Collection = "sentinel-2-l2a"
+				settings.Collection = sc.CDSECollection
 				auth, err := resolveAuth(r)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
@@ -425,6 +480,9 @@ func runSetupWizard() (*Settings, error) {
 			case "custom":
 				settings.STACURL = strings.TrimSpace(r.FormValue("stac_url"))
 				settings.Collection = strings.TrimSpace(r.FormValue("collection"))
+				if settings.Collection != "" {
+					settings.Satellite = string(ParseSatelliteType(settings.Collection))
+				}
 			default:
 				http.Error(w, "Invalid source", http.StatusBadRequest)
 				return

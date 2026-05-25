@@ -77,17 +77,30 @@ func main() {
 		auth = NewCDSEAuth(cfg.Auth.Username, cfg.Auth.Password)
 	}
 
+	sat := SatelliteType(cfg.Satellite)
+	if sat == "" {
+		sat = SatS2L2A
+	}
+	sc := satelliteConfigs[sat]
+
+	// 若 bands 未指定，使用卫星类型的默认波段
+	if len(cfg.Bands) == 0 {
+		cfg.Bands = sc.DefaultBands
+	}
+
 	opts := SearchOptions{
 		Bbox:       cfg.BBox,
 		StartDate:  cfg.StartDate,
 		EndDate:    cfg.EndDate,
 		Limit:      cfg.Limit,
+		MinCloud:   cfg.MinCloud,
 		MaxCloud:   cfg.MaxCloud,
 		STACURL:    cfg.STACURL,
 		Collection: cfg.Collection,
+		Satellite:  sat,
 	}
 
-	fmt.Printf("Searching Sentinel-2 L2A data...\n")
+	fmt.Printf("Searching %s data...\n", sc.Collection)
 	fmt.Printf("  Config:    %s\n", *configPath)
 	fmt.Printf("  Dest:      %s\n", *destDir)
 	fmt.Printf("  STAC URL:  %s\n", opts.STACURL)
@@ -100,7 +113,17 @@ func main() {
 	}())
 	fmt.Printf("  BBox:      %v (west, south, east, north)\n", opts.Bbox)
 	fmt.Printf("  Date:      %s to %s\n", opts.StartDate, opts.EndDate)
-	fmt.Printf("  Cloud:     <= %.0f%%\n", opts.MaxCloud)
+	if sc.NeedsCloudFilter {
+		if cfg.MinCloud > 0 && cfg.MaxCloud > 0 {
+			fmt.Printf("  Cloud:     %.0f%% - %.0f%%\n", cfg.MinCloud, cfg.MaxCloud)
+		} else if cfg.MaxCloud > 0 {
+			fmt.Printf("  Cloud:     <= %.0f%%\n", opts.MaxCloud)
+		} else if cfg.MinCloud > 0 {
+			fmt.Printf("  Cloud:     >= %.0f%%\n", cfg.MinCloud)
+		} else {
+			fmt.Printf("  Cloud:     no filter\n")
+		}
+	}
 	fmt.Printf("  Bands:     %v\n", cfg.Bands)
 	fmt.Printf("  Workers:   %d\n", cfg.MaxWorkers)
 	fmt.Printf("  Retries:   %d\n\n", cfg.MaxRetries)
@@ -116,11 +139,11 @@ func main() {
 		return
 	}
 
-	items := FilterItemsByCloud(stacCollection.Features, opts.MaxCloud)
+	items := FilterItemsByCloud(stacCollection.Features, opts.MinCloud, opts.MaxCloud, sat)
 	PrintItemSummary(items)
 
 	// 为已有数据补生成 KML
-	existingItems := scanExistingItems(*destDir)
+	existingItems := scanExistingItems(*destDir, sat)
 	if len(existingItems) > 0 {
 		fmt.Println("\n=== Checking existing KML ===")
 		for itemID := range existingItems {
@@ -165,7 +188,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "  [kml skip] %s: %v\n", item.ID, err)
 		}
 		for _, band := range cfg.Bands {
-			assetKey := resolveAssetKey(band, cfg.STACURL)
+			assetKey := resolveAssetKey(band, cfg.STACURL, sat)
 			asset, ok := item.Assets[assetKey]
 			if !ok {
 				fmt.Printf("  [warn] band '%s' not available (tried '%s')\n", band, assetKey)
@@ -191,10 +214,12 @@ func main() {
 		}
 	}
 
-	fmt.Println("\n=== Building RGB ===")
-	for _, item := range items {
-		if err := BuildRGB(*destDir, item.ID); err != nil {
-			fmt.Fprintf(os.Stderr, "  [rgb skip] %s: %v\n", item.ID, err)
+	if sc.SupportsRGB {
+		fmt.Println("\n=== Building RGB ===")
+		for _, item := range items {
+			if err := BuildRGB(*destDir, item.ID, sat); err != nil {
+				fmt.Fprintf(os.Stderr, "  [rgb skip] %s: %v\n", item.ID, err)
+			}
 		}
 	}
 

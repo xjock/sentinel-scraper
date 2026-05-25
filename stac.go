@@ -13,18 +13,70 @@ import (
 	"time"
 )
 
-// cdseBandMap translates user-friendly band names to CDSE STAC asset keys.
-var cdseBandMap = map[string]string{
-	"coastal": "B01_60m", "blue": "B02_10m", "green": "B03_10m", "red": "B04_10m",
-	"rededge1": "B05_20m", "rededge2": "B06_20m", "rededge3": "B07_20m",
-	"nir": "B08_10m", "nir08": "B8A_20m", "nir09": "B09_60m",
-	"swir16": "B11_20m", "swir22": "B12_20m", "scl": "SCL_20m",
-	"aot": "AOT_20m", "wvp": "WVP_10m", "tci": "TCI_10m",
+// satConfig holds per-satellite metadata used to drive search, download and post-processing.
+type satConfig struct {
+	Collection       string
+	CDSECollection   string
+	NeedsCloudFilter bool
+	SupportsRGB      bool
+	DefaultBands     []string
+	BandMap          map[string]string
+	KnownBands       []string
+	ODataCollection  string
+	ODataProductType string
 }
 
-func resolveAssetKey(band, stacURL string) string {
+// satelliteConfigs maps each supported satellite type to its configuration.
+var satelliteConfigs = map[SatelliteType]satConfig{
+	SatS2L2A: {
+		Collection:       "sentinel-2-l2a",
+		CDSECollection:   "sentinel-2-l2a",
+		NeedsCloudFilter: true,
+		SupportsRGB:      true,
+		DefaultBands:     []string{"red", "green", "blue"},
+		BandMap: map[string]string{
+			"coastal": "B01_60m", "blue": "B02_10m", "green": "B03_10m", "red": "B04_10m",
+			"rededge1": "B05_20m", "rededge2": "B06_20m", "rededge3": "B07_20m",
+			"nir": "B08_10m", "nir08": "B8A_20m", "nir09": "B09_60m",
+			"swir16": "B11_20m", "swir22": "B12_20m", "scl": "SCL_20m",
+			"aot": "AOT_20m", "wvp": "WVP_10m", "tci": "TCI_10m",
+		},
+		KnownBands:       []string{"coastal", "blue", "green", "red", "rededge1", "rededge2", "rededge3", "nir", "nir08", "nir09", "swir16", "swir22", "scl"},
+		ODataCollection:  "SENTINEL-2",
+		ODataProductType: "S2MSI2A",
+	},
+	SatS1GRD: {
+		Collection:       "sentinel-1-grd",
+		CDSECollection:   "SENTINEL1_GRD",
+		NeedsCloudFilter: false,
+		SupportsRGB:      false,
+		DefaultBands:     []string{"vv", "vh"},
+		BandMap: map[string]string{
+			"vv": "vv", "vh": "vh", "hh": "hh", "hv": "hv",
+		},
+		KnownBands:       []string{"vv", "vh", "hh", "hv"},
+		ODataCollection:  "SENTINEL-1",
+		ODataProductType: "GRD",
+	},
+	SatS1SLC: {
+		Collection:       "sentinel-1-slc",
+		CDSECollection:   "SENTINEL1_SLC",
+		NeedsCloudFilter: false,
+		SupportsRGB:      false,
+		DefaultBands:     []string{"vv", "vh"},
+		BandMap: map[string]string{
+			"vv": "vv", "vh": "vh", "hh": "hh", "hv": "hv",
+		},
+		KnownBands:       []string{"vv", "vh", "hh", "hv"},
+		ODataCollection:  "SENTINEL-1",
+		ODataProductType: "SLC",
+	},
+}
+
+func resolveAssetKey(band, stacURL string, sat SatelliteType) string {
+	cfg := satelliteConfigs[sat]
 	if strings.Contains(stacURL, "stac.dataspace.copernicus.eu") {
-		if key, ok := cdseBandMap[band]; ok {
+		if key, ok := cfg.BandMap[band]; ok {
 			return key
 		}
 	}
@@ -87,8 +139,14 @@ type downloadResult struct {
 }
 
 func SearchItems(opts SearchOptions, auth Authenticator) (*STACItemCollection, error) {
+	if opts.Satellite == "" {
+		opts.Satellite = SatS2L2A
+	}
 	if opts.Limit == 0 {
 		opts.Limit = 10
+	}
+	if len(opts.Bbox) != 4 {
+		return nil, fmt.Errorf("bbox must have 4 elements [west,south,east,north]")
 	}
 	bboxStr := fmt.Sprintf("%f,%f,%f,%f", opts.Bbox[0], opts.Bbox[1], opts.Bbox[2], opts.Bbox[3])
 	datetime := fmt.Sprintf("%sT00:00:00Z/%sT23:59:59Z", opts.StartDate, opts.EndDate)
@@ -97,9 +155,15 @@ func SearchItems(opts SearchOptions, auth Authenticator) (*STACItemCollection, e
 	if stacURL == "" {
 		stacURL = EarthSearchURL
 	}
+
+	cfg := satelliteConfigs[opts.Satellite]
 	collection := opts.Collection
 	if collection == "" {
-		collection = Collection
+		if strings.Contains(stacURL, "stac.dataspace.copernicus.eu") {
+			collection = cfg.CDSECollection
+		} else {
+			collection = cfg.Collection
+		}
 	}
 
 	u, err := url.Parse(stacURL + "/search")
@@ -111,8 +175,15 @@ func SearchItems(opts SearchOptions, auth Authenticator) (*STACItemCollection, e
 	q.Set("bbox", bboxStr)
 	q.Set("datetime", datetime)
 	q.Set("limit", fmt.Sprintf("%d", opts.Limit))
-	if opts.MaxCloud > 0 {
-		q.Set("query", fmt.Sprintf(`{"eo:cloud_cover":{"lte":%f}}`, opts.MaxCloud))
+
+	if cfg.NeedsCloudFilter {
+		if opts.MinCloud > 0 && opts.MaxCloud > 0 {
+			q.Set("query", fmt.Sprintf(`{"eo:cloud_cover":{"gte":%f,"lte":%f}}`, opts.MinCloud, opts.MaxCloud))
+		} else if opts.MaxCloud > 0 {
+			q.Set("query", fmt.Sprintf(`{"eo:cloud_cover":{"lte":%f}}`, opts.MaxCloud))
+		} else if opts.MinCloud > 0 {
+			q.Set("query", fmt.Sprintf(`{"eo:cloud_cover":{"gte":%f}}`, opts.MinCloud))
+		}
 	}
 	u.RawQuery = q.Encode()
 
@@ -144,12 +215,29 @@ func SearchItems(opts SearchOptions, auth Authenticator) (*STACItemCollection, e
 	return &result, nil
 }
 
-func FilterItemsByCloud(items []STACItem, maxCloud float64) []STACItem {
+func FilterItemsByCloud(items []STACItem, minCloud, maxCloud float64, sat SatelliteType) []STACItem {
+	if sat == "" {
+		sat = SatS2L2A
+	}
+	cfg := satelliteConfigs[sat]
+	if !cfg.NeedsCloudFilter {
+		return items
+	}
 	var filtered []STACItem
 	for _, item := range items {
-		// 缺失 cloud_cover 字段时按通过处理(乐观语义)。SearchItems 已在
-		// 服务端用 query 过滤,本地是双重保险,字段缺失不应排除观测。
-		if item.Properties.CloudCover == nil || *item.Properties.CloudCover <= maxCloud {
+		if item.Properties.CloudCover == nil {
+			filtered = append(filtered, item)
+			continue
+		}
+		cc := *item.Properties.CloudCover
+		pass := true
+		if minCloud > 0 && cc < minCloud {
+			pass = false
+		}
+		if maxCloud > 0 && cc > maxCloud {
+			pass = false
+		}
+		if pass {
 			filtered = append(filtered, item)
 		}
 	}
@@ -187,14 +275,13 @@ func SaveKML(item STACItem, destDir string) (string, error) {
 	return kmlPath, nil
 }
 
-var knownBands = []string{"coastal", "blue", "green", "red", "rededge1", "rededge2", "rededge3", "nir", "nir08", "nir09", "swir16", "swir22", "scl"}
-
-func parseItemIDFromFilename(filename string) string {
+func parseItemIDFromFilename(filename string, sat SatelliteType) string {
 	if !strings.HasSuffix(filename, ".tif") {
 		return ""
 	}
+	cfg := satelliteConfigs[sat]
 	base := strings.TrimSuffix(filename, ".tif")
-	for _, band := range knownBands {
+	for _, band := range cfg.KnownBands {
 		suffix := "_" + band
 		if strings.HasSuffix(base, suffix) {
 			return strings.TrimSuffix(base, suffix)
@@ -212,7 +299,7 @@ func resolveDownloadURL(asset Asset) string {
 	return asset.Href
 }
 
-func scanExistingItems(destDir string) map[string]bool {
+func scanExistingItems(destDir string, sat SatelliteType) map[string]bool {
 	items := make(map[string]bool)
 	entries, err := os.ReadDir(destDir)
 	if err != nil {
@@ -222,7 +309,7 @@ func scanExistingItems(destDir string) map[string]bool {
 		if entry.IsDir() {
 			continue
 		}
-		itemID := parseItemIDFromFilename(entry.Name())
+		itemID := parseItemIDFromFilename(entry.Name(), sat)
 		if itemID != "" {
 			items[itemID] = true
 		}
