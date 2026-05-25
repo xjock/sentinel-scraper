@@ -259,18 +259,6 @@ docker run --rm \
   sentinel2-scraper
 ```
 
-## Dependencies
-
-- **Go standard library**: no third-party Go dependencies
-- **GDAL command-line tools** (runtime, used only for RGB composition):
-  - `gdalbuildvrt` / `gdal_translate` / `gdalwarp`
-  - `gdal_trace_outline` / `gdal_rasterize` / `gdal_merge_simple`
-  - `gdalinfo` (size / extent parsing)
-
-Windows users can use the bundled GDAL binaries shipped with this repo (`gdal305.dll`, `proj_9_1.dll`, `share/proj`, etc.) — keep them next to `sentinel2-scraper.exe`. On Linux / macOS, install GDAL via your package manager (`apt install gdal-bin`, `brew install gdal`).
-
-> The program first looks for GDAL tools in the executable's directory, then falls back to `PATH`. `PROJ_DATA` is automatically pointed at the bundled `share/proj` if present.
-
 ## Project Structure
 
 The code lives in `package main`, split into 9 Go files by responsibility:
@@ -320,12 +308,6 @@ You can switch any time; previously-downloaded files are unaffected.
 **Q: Can I use a custom STAC API?**
 
 Yes. Pick "Custom STAC API" in the wizard and provide the endpoint URL and collection name.
-
-**Q: RGB composition fails or black borders are not trimmed?**
-
-- Verify `red` / `green` / `blue` all downloaded successfully
-- Verify GDAL tools are available — including `gdal_trace_outline` and `gdal_merge_simple`
-- On Windows, if `gdal305.dll` is missing, copy the GDAL DLLs next to `sentinel2-scraper.exe`
 
 ## License
 
