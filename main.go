@@ -37,7 +37,10 @@ func main() {
 	}
 
 	if *setupAuth {
-		setupAuthWizard()
+		if err := setupAuthWizard(); err != nil {
+			fmt.Fprintf(os.Stderr, "配置失败: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 

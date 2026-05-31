@@ -121,7 +121,6 @@ func resumableDownload(
 		if err != nil {
 			return 0, total, false, fmt.Errorf("create file: %w", err)
 		}
-		defer f.Close()
 
 		if total > 0 {
 			fmt.Fprintf(os.Stderr, "  [downloading] %s (%s)\n", filename, formatBytes(total))
@@ -130,7 +129,11 @@ func resumableDownload(
 		}
 		pr := &progressReader{r: resp.Body, total: total, current: 0, label: label}
 		if _, err := io.Copy(f, pr); err != nil {
+			f.Close()
 			return 0, total, false, fmt.Errorf("write file: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return 0, total, false, fmt.Errorf("close file: %w", err)
 		}
 
 	case http.StatusPartialContent:
@@ -145,7 +148,6 @@ func resumableDownload(
 		if err != nil {
 			return 0, total, false, fmt.Errorf("open file for append: %w", err)
 		}
-		defer f.Close()
 
 		if total > 0 {
 			fmt.Fprintf(os.Stderr, "  [resuming] %s (%s / %s, %s remaining)\n", filename, formatBytes(offset), formatBytes(total), formatBytes(total-offset))
@@ -154,7 +156,11 @@ func resumableDownload(
 		}
 		pr := &progressReader{r: resp.Body, total: total, current: offset, label: label}
 		if _, err := io.Copy(f, pr); err != nil {
+			f.Close()
 			return 0, total, false, fmt.Errorf("write file: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return 0, total, false, fmt.Errorf("close file: %w", err)
 		}
 
 	case http.StatusRequestedRangeNotSatisfiable:

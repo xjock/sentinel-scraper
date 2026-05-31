@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"strings"
 )
@@ -24,7 +25,7 @@ func writeKMLFile(kmlPath, displayName string, ring [][]float64, fields []kmlFie
 		if f.Value == "" {
 			continue
 		}
-		fmt.Fprintf(&ext, "        <Data name=\"%s\"><value>%s</value></Data>\n", f.Name, f.Value)
+		fmt.Fprintf(&ext, "        <Data name=\"%s\"><value>%s</value></Data>\n", html.EscapeString(f.Name), html.EscapeString(f.Value))
 	}
 	ext.WriteString("      </ExtendedData>")
 
@@ -55,7 +56,7 @@ func writeKMLFile(kmlPath, displayName string, ring [][]float64, fields []kmlFie
       </Polygon>
     </Placemark>
   </Document>
-</kml>`, displayName, ext.String(), strings.TrimSpace(coords.String()))
+</kml>`, html.EscapeString(displayName), ext.String(), strings.TrimSpace(coords.String()))
 
 	if err := os.WriteFile(kmlPath, []byte(kml), 0644); err != nil {
 		return fmt.Errorf("write kml: %w", err)

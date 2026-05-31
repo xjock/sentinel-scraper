@@ -110,7 +110,9 @@ func queryODataProducts(auth Authenticator, cfg *Config) ([]odataProduct, error)
 	q.Set("$count", "true")
 	q.Set("$select", "Id,Name,ContentLength,OriginDate,Online,GeoFootprint")
 
-	req, err := http.NewRequestWithContext(context.Background(), "GET", cdseODataCatalogURL+"?"+q.Encode(), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", cdseODataCatalogURL+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

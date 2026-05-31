@@ -254,6 +254,19 @@ func buildRGBA(bytePath, outputPath, workDir string) error {
 	maskCropPath := filepath.Join(workDir, base+"_mask_crop.tif")
 	cropPath := filepath.Join(workDir, base+"_crop.tif")
 
+	// 统一清理中间产物，无论成功或失败
+	cleanup := func() {
+		removeWithRetry(maskShpPath)
+		removeWithRetry(maskShpBase + ".shx")
+		removeWithRetry(maskShpBase + ".dbf")
+		removeWithRetry(maskShpBase + ".prj")
+		removeWithRetry(maskShpBase + ".cpg")
+		removeWithRetry(maskTifPath)
+		removeWithRetry(cropPath)
+		removeWithRetry(maskCropPath)
+	}
+	defer cleanup()
+
 	// 1) gdal_trace_outline
 	traceArgs := []string{bytePath, "-ndv", "0", "-min-ring-area", "10000000", "-out-cs", "en", "-ogr-out", maskShpPath}
 	fmt.Printf("  [cmd] %s %s\n", findGDALTool("gdal_trace_outline"), strings.Join(traceArgs, " "))
@@ -323,14 +336,5 @@ func buildRGBA(bytePath, outputPath, workDir string) error {
 		return fmt.Errorf("gdal_merge_simple failed: %w", err)
 	}
 
-	// 清理中间产物
-	removeWithRetry(maskShpPath)
-	removeWithRetry(maskShpBase + ".shx")
-	removeWithRetry(maskShpBase + ".dbf")
-	removeWithRetry(maskShpBase + ".prj")
-	removeWithRetry(maskShpBase + ".cpg")
-	removeWithRetry(maskTifPath)
-	removeWithRetry(cropPath)
-	removeWithRetry(maskCropPath)
 	return nil
 }

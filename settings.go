@@ -17,10 +17,13 @@ import (
 
 var stdinReader = bufio.NewReader(os.Stdin)
 
-func readLine(prompt string) string {
+func readLine(prompt string) (string, error) {
 	fmt.Print(prompt)
-	line, _ := stdinReader.ReadString('\n')
-	return strings.TrimSpace(line)
+	line, err := stdinReader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
 }
 
 // hasSavedAuth 判断已有 settings 中是否保存了完整的用户名/密码。
@@ -30,45 +33,52 @@ func hasSavedAuth(s *Settings) bool {
 
 // promptCredentials 询问用户名和密码。如果 existing 已有完整凭据，允许直接回车
 // 跳过两个输入以保持原值不变；否则强制输入两项非空。
-func promptCredentials(existing *Settings) (string, string) {
+func promptCredentials(existing *Settings) (string, string, error) {
 	saved := hasSavedAuth(existing)
 	if saved {
 		fmt.Printf("已保存凭据：%s（直接回车保持不变）\n", existing.Auth.Username)
 	}
-	username := readLine("邮箱（用户名）: ")
-	password := readLine("密码: ")
+	username, err := readLine("邮箱（用户名）: ")
+	if err != nil {
+		return "", "", err
+	}
+	password, err := readLine("密码: ")
+	if err != nil {
+		return "", "", err
+	}
 	if username == "" && password == "" {
 		if saved {
-			return existing.Auth.Username, existing.Auth.Password
+			return existing.Auth.Username, existing.Auth.Password, nil
 		}
-		fmt.Println("\n错误: 用户名和密码不能为空。")
-		os.Exit(1)
+		return "", "", fmt.Errorf("用户名和密码不能为空")
 	}
 	if username == "" || password == "" {
-		fmt.Println("\n错误: 用户名和密码必须同时提供。")
-		os.Exit(1)
+		return "", "", fmt.Errorf("用户名和密码必须同时提供")
 	}
-	return username, password
+	return username, password, nil
 }
 
-func promptSatellite() SatelliteType {
+func promptSatellite() (SatelliteType, error) {
 	fmt.Println("\n选择卫星数据类型:")
 	fmt.Println("  1) Sentinel-2 L2A（多光谱，支持云量过滤和 RGB 合成）")
 	fmt.Println("  2) Sentinel-1 GRD（SAR 雷达，不受云影响，VV/VH 极化）")
 	fmt.Println("  3) Sentinel-1 SLC（SAR 雷达，不受云影响，VV/VH 极化）")
 	fmt.Println()
-	satChoice := readLine("选择 [1-3]: ")
+	satChoice, err := readLine("选择 [1-3]: ")
+	if err != nil {
+		return "", err
+	}
 	switch satChoice {
 	case "2":
-		return SatS1GRD
+		return SatS1GRD, nil
 	case "3":
-		return SatS1SLC
+		return SatS1SLC, nil
 	default:
-		return SatS2L2A
+		return SatS2L2A, nil
 	}
 }
 
-func setupAuthWizard() {
+func setupAuthWizard() error {
 	existing, _ := loadSettings()
 
 	fmt.Println("=== sentinel-scraper 认证配置 ===")
@@ -80,11 +90,17 @@ func setupAuthWizard() {
 	fmt.Println("  4) 自定义 STAC API")
 	fmt.Println()
 
-	choice := readLine("选择 [1-4]: ")
+	choice, err := readLine("选择 [1-4]: ")
+	if err != nil {
+		return err
+	}
 
 	switch choice {
 	case "1":
-		sat := promptSatellite()
+		sat, err := promptSatellite()
+		if err != nil {
+			return err
+		}
 		sc := satelliteConfigs[sat]
 		settings := &Settings{
 			Source:     "earth_search",
@@ -93,14 +109,16 @@ func setupAuthWizard() {
 			Satellite:  string(sat),
 		}
 		if err := saveSettings(settings); err != nil {
-			fmt.Fprintf(os.Stderr, "保存配置失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("保存配置失败: %w", err)
 		}
 		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
 		fmt.Println("Earth Search 为默认数据源，无需认证。")
 
 	case "2":
-		sat := promptSatellite()
+		sat, err := promptSatellite()
+		if err != nil {
+			return err
+		}
 		sc := satelliteConfigs[sat]
 		fmt.Println("\n--- CDSE STAC 配置 ---")
 		if sat == SatS2L2A {
@@ -110,7 +128,10 @@ func setupAuthWizard() {
 		}
 		fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
 		fmt.Println()
-		username, password := promptCredentials(existing)
+		username, password, err := promptCredentials(existing)
+		if err != nil {
+			return err
+		}
 		settings := &Settings{
 			Source:     "cdse",
 			STACURL:    "https://stac.dataspace.copernicus.eu/v1",
@@ -119,14 +140,16 @@ func setupAuthWizard() {
 			Auth:       &AuthConfig{Username: username, Password: password},
 		}
 		if err := saveSettings(settings); err != nil {
-			fmt.Fprintf(os.Stderr, "保存配置失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("保存配置失败: %w", err)
 		}
 		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
 		fmt.Println("文件权限: 0600（仅所有者可读写）")
 
 	case "3":
-		sat := promptSatellite()
+		sat, err := promptSatellite()
+		if err != nil {
+			return err
+		}
 		fmt.Println("\n--- CDSE OData 配置 ---")
 		if sat == SatS2L2A {
 			fmt.Println("整景 ZIP 下载（包含所有波段和元数据），适合需要完整产品的场景。")
@@ -135,26 +158,33 @@ func setupAuthWizard() {
 		}
 		fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
 		fmt.Println()
-		username, password := promptCredentials(existing)
+		username, password, err := promptCredentials(existing)
+		if err != nil {
+			return err
+		}
 		settings := &Settings{
 			Source:    "cdse_odata",
 			Satellite: string(sat),
 			Auth:      &AuthConfig{Username: username, Password: password},
 		}
 		if err := saveSettings(settings); err != nil {
-			fmt.Fprintf(os.Stderr, "保存配置失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("保存配置失败: %w", err)
 		}
 		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
 		fmt.Println("文件权限: 0600（仅所有者可读写）")
 
 	case "4":
 		fmt.Println("\n--- 自定义 STAC API 配置 ---")
-		stacURL := readLine("STAC API 地址: ")
-		collection := readLine("Collection 名称: ")
+		stacURL, err := readLine("STAC API 地址: ")
+		if err != nil {
+			return err
+		}
+		collection, err := readLine("Collection 名称: ")
+		if err != nil {
+			return err
+		}
 		if stacURL == "" || collection == "" {
-			fmt.Println("\n错误: 地址和名称不能为空。")
-			os.Exit(1)
+			return fmt.Errorf("地址和名称不能为空")
 		}
 		sat := ParseSatelliteType(collection)
 		settings := &Settings{
@@ -164,16 +194,15 @@ func setupAuthWizard() {
 			Satellite:  string(sat),
 		}
 		if err := saveSettings(settings); err != nil {
-			fmt.Fprintf(os.Stderr, "保存配置失败: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("保存配置失败: %w", err)
 		}
 		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
 		fmt.Println("文件权限: 0600（仅所有者可读写）")
 
 	default:
-		fmt.Println("\n无效选择，请重新运行并选择 1、2、3 或 4。")
-		os.Exit(1)
+		return fmt.Errorf("无效选择，请重新运行并选择 1、2、3 或 4")
 	}
+	return nil
 }
 
 // ---------- Settings & Web-based Setup ----------
