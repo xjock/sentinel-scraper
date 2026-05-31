@@ -128,7 +128,10 @@ func queryODataProducts(auth Authenticator, cfg *Config) ([]odataProduct, error)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("catalog returned %d: %s", resp.StatusCode, string(body))
 	}
@@ -144,7 +147,9 @@ func downloadODataProductOnce(auth Authenticator, product odataProduct, destDir 
 	downloadURL := fmt.Sprintf("%s(%s)/$value", cdseODataDownloadURL, product.ID)
 	tmpPath := filepath.Join(destDir, product.Name+".zip.tmp")
 	client := &http.Client{Timeout: 30 * time.Minute}
-	finalSize, total, _, err := resumableDownload(context.Background(), client, downloadURL, auth, tmpPath, product.Name, product.ContentLength)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	finalSize, total, _, err := resumableDownload(ctx, client, downloadURL, auth, tmpPath, product.Name, product.ContentLength)
 	if err != nil {
 		return 0, err
 	}
@@ -192,17 +197,16 @@ func downloadODataProduct(auth Authenticator, product odataProduct, destDir stri
 	return nil
 }
 
-func runODataFlow(cfg *Config, auth Authenticator, destDir string) {
+func runODataFlow(cfg *Config, auth Authenticator, destDir string) error {
 	fmt.Println("\n=== CDSE OData Search ===")
 	products, err := queryODataProducts(auth, cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "OData search failed: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("OData search failed: %w", err)
 	}
 
 	if len(products) == 0 {
 		fmt.Println("No products found.")
-		return
+		return nil
 	}
 
 	fmt.Printf("\nFound %d products\n\n", len(products))
@@ -292,12 +296,12 @@ func runODataFlow(cfg *Config, auth Authenticator, destDir string) {
 
 	fmt.Println("\nDone.")
 	if failed > 0 {
-		fmt.Printf("%d downloads failed.\n", failed)
-		os.Exit(1)
+		return fmt.Errorf("%d downloads failed", failed)
 	}
 	if skipped > 0 {
 		fmt.Printf("%d products were offline (LTA), skipped.\n", skipped)
 	}
+	return nil
 }
 
 // extractRGBJP2s 从 Sentinel-2 SAFE zip 包里只解压 R10m 的 B02/B03/B04 三个 jp2，

@@ -76,7 +76,10 @@ func main() {
 			os.Exit(1)
 		}
 		auth := NewCDSEAuth(cfg.Auth.Username, cfg.Auth.Password)
-		runODataFlow(cfg, auth, *destDir)
+		if err := runODataFlow(cfg, auth, *destDir); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -151,7 +154,10 @@ func main() {
 	PrintItemSummary(items)
 
 	// 为已有数据补生成 KML
-	existingItems := scanExistingItems(*destDir, sat)
+	existingItems, err := scanExistingItems(*destDir, sat)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to scan existing items: %v\n", err)
+	}
 	if len(existingItems) > 0 {
 		fmt.Println("\n=== Checking existing KML ===")
 		for itemID := range existingItems {

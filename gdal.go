@@ -12,13 +12,13 @@ import (
 )
 
 // removeWithRetry 在 Windows 上 GDAL 进程刚退出时文件句柄可能未立即释放，
-// 短暂重试后再删除，避免中间文件残留。
+// 指数退避重试后再删除，避免中间文件残留。
 func removeWithRetry(path string) {
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 10; i++ {
 		if err := os.Remove(path); err == nil || os.IsNotExist(err) {
 			return
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(time.Duration(100*(1<<i)) * time.Millisecond)
 	}
 }
 
@@ -196,6 +196,7 @@ func buildRGBByte(redPath, greenPath, bluePath, bytePath, workDir string) error 
 	if err := byteCmd.Run(); err != nil {
 		return fmt.Errorf("gdal_translate to byte failed: %w", err)
 	}
+	removeWithRetry(vrtPath)
 	return nil
 }
 
@@ -232,9 +233,13 @@ func getImageExtent(tifPath string) (float64, float64, float64, float64, error) 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "Upper Left  (") {
-			fmt.Sscanf(line, "Upper Left  ( %f, %f)", &xmin, &ymax)
+			if n, _ := fmt.Sscanf(line, "Upper Left  ( %f, %f)", &xmin, &ymax); n != 2 {
+				continue
+			}
 		} else if strings.HasPrefix(line, "Lower Right (") {
-			fmt.Sscanf(line, "Lower Right ( %f, %f)", &xmax, &ymin)
+			if n, _ := fmt.Sscanf(line, "Lower Right ( %f, %f)", &xmax, &ymin); n != 2 {
+				continue
+			}
 		}
 	}
 	if xmin == 0 && ymin == 0 && xmax == 0 && ymax == 0 {

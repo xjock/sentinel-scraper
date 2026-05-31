@@ -299,11 +299,14 @@ func resolveDownloadURL(asset Asset) string {
 	return asset.Href
 }
 
-func scanExistingItems(destDir string, sat SatelliteType) map[string]bool {
+func scanExistingItems(destDir string, sat SatelliteType) (map[string]bool, error) {
 	items := make(map[string]bool)
 	entries, err := os.ReadDir(destDir)
 	if err != nil {
-		return items
+		if os.IsNotExist(err) {
+			return items, nil
+		}
+		return nil, err
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -314,7 +317,7 @@ func scanExistingItems(destDir string, sat SatelliteType) map[string]bool {
 			items[itemID] = true
 		}
 	}
-	return items
+	return items, nil
 }
 
 func fetchItem(itemID, stacURL, collection string, auth Authenticator) (STACItem, error) {
@@ -377,7 +380,9 @@ func DownloadAsset(asset Asset, destDir string, itemID string, bandName string, 
 	url := resolveDownloadURL(asset)
 	client := &http.Client{Timeout: DownloadTimeout}
 	label := fmt.Sprintf("%s/%s", itemID, bandName)
-	finalSize, total, skipped, err := resumableDownload(context.Background(), client, url, auth, destPath, label, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), DownloadTimeout)
+	defer cancel()
+	finalSize, total, skipped, err := resumableDownload(ctx, client, url, auth, destPath, label, 0)
 	if err != nil {
 		return "", false, err
 	}

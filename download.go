@@ -9,7 +9,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+var stderrMu sync.Mutex
 
 type progressReader struct {
 	r           io.Reader
@@ -25,13 +28,17 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	if pr.total > 0 {
 		percent := int(pr.current * 100 / pr.total)
 		if percent >= pr.lastPercent+10 {
+			stderrMu.Lock()
 			fmt.Fprintf(os.Stderr, "  [%s] %3d%% (%s / %s)\n", pr.label, percent, formatBytes(pr.current), formatBytes(pr.total))
+			stderrMu.Unlock()
 			pr.lastPercent = percent
 		}
 	} else {
 		// 未知总大小时,每 10 MB 打印一次
 		if pr.current >= int64(pr.lastPercent)*10*1024*1024 {
+			stderrMu.Lock()
 			fmt.Fprintf(os.Stderr, "  [%s] downloaded %s\n", pr.label, formatBytes(pr.current))
+			stderrMu.Unlock()
 			pr.lastPercent++
 		}
 	}
