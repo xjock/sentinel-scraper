@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // SatelliteType identifies the satellite mission and product type.
@@ -104,6 +105,31 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Collection = Collection
 	}
 	return &cfg, nil
+}
+
+func ensureDefaultConfig(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	now := time.Now()
+	defaultCfg := Config{
+		BBox:       []float64{116.2, 39.8, 116.6, 40.0},
+		StartDate:  now.AddDate(0, 0, -30).Format("2006-01-02"),
+		EndDate:    now.Format("2006-01-02"),
+		Bands:      []string{"red", "green", "blue"},
+		Limit:      20,
+		MaxWorkers: 4,
+		MaxRetries: 3,
+	}
+	data, err := json.MarshalIndent(defaultCfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal default config: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("write default config: %w", err)
+	}
+	fmt.Printf("Created default config: %s\n", path)
+	return nil
 }
 
 func mergeSettings(cfg *Config) {

@@ -54,6 +54,11 @@ func main() {
 		// First-run: continue with the saved settings
 	}
 
+	if err := ensureDefaultConfig(*configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create default config: %v\n", err)
+		os.Exit(1)
+	}
+
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
