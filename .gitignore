@@ -7,9 +7,9 @@ sentinel-scraper
 
 
 # Downloaded data
-sentinel2_data/
-sentinel2_test_data/
-sentinel2_stretch_test/
+sentinel_data/
+sentinel_test_data/
+sentinel_stretch_test/
 
 # GDAL bundled data
 share/

@@ -139,7 +139,7 @@ Settings are stored in `~/.sentinel-scraper/settings.json` with mode `0600` (own
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-config` | `config.json` | Path to query configuration JSON |
-| `-dest` | `./sentinel2_data` | Destination directory |
+| `-dest` | `./sentinel_data` | Destination directory |
 | `-setup` | — | Open the web setup wizard |
 | `-setup-auth` | — | Open the terminal setup wizard |
 
@@ -206,7 +206,7 @@ Use **friendly names** in `config.json`. They are automatically mapped to provid
 ### STAC mode — Sentinel-2 (Earth Search / CDSE STAC)
 
 ```
-sentinel2_data/
+sentinel_data/
   S2A_50TMK_20250105_0_L2A_red.tif
   S2A_50TMK_20250105_0_L2A_green.tif
   S2A_50TMK_20250105_0_L2A_blue.tif
@@ -221,7 +221,7 @@ CDSE STAC source files are JPEG 2000 (`.jp2`); GDAL reads them transparently. RG
 ### STAC mode — Sentinel-1 (Earth Search / CDSE STAC)
 
 ```
-sentinel2_data/
+sentinel_data/
   S1A_IW_GRDH_1SDV_20250105_030000_039A_vv.tif
   S1A_IW_GRDH_1SDV_20250105_030000_039A_vh.tif
   S1A_IW_GRDH_1SDV_20250105_030000_039A.kml
@@ -233,7 +233,7 @@ Sentinel-1 SAR data is downloaded as raw polarization files. **No RGB compositio
 ### OData mode (CDSE OData)
 
 ```
-sentinel2_data/
+sentinel_data/
   S2A_T50TMK_20250105T030529_MSIL2A.zip            ← Full SAFE product
   S2A_T50TMK_20250105T030529_MSIL2A_rgba.tif       ← Auto RGB w/ borders trimmed
   S2A_T50TMK_20250105T030529_MSIL2A.kml            ← Footprint KML
@@ -270,7 +270,7 @@ go test ./...
 docker build -t sentinel-scraper .
 docker run --rm \
   -v $(pwd)/config.json:/app/config.json \
-  -v $(pwd)/sentinel2_data:/app/sentinel2_data \
+  -v $(pwd)/sentinel_data:/app/sentinel_data \
   sentinel-scraper
 ```
 

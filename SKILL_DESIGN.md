@@ -88,7 +88,7 @@
 {
   "item_id": "S2C_50TMK_20260111_0_L2A",
   "bands": ["red", "green", "blue"],
-  "dest_dir": "./sentinel2_data",
+  "dest_dir": "./sentinel_data",
   "max_workers": 4,
   "max_retries": 3
 }
@@ -102,7 +102,7 @@
   "downloaded": ["S2C_50TMK_20260111_0_L2A_red.tif", "..."],
   "skipped": [],
   "failed": [],
-  "dest_dir": "./sentinel2_data"
+  "dest_dir": "./sentinel_data"
 }
 ```
 
@@ -146,7 +146,7 @@
 ```json
 {
   "item_id": "S2C_50TMK_20260111_0_L2A",
-  "dest_dir": "./sentinel2_data"
+  "dest_dir": "./sentinel_data"
 }
 ```
 
@@ -154,8 +154,8 @@
 ```json
 {
   "item_id": "S2C_50TMK_20260111_0_L2A",
-  "rgb_path": "./sentinel2_data/S2C_50TMK_20260111_0_L2A_RGB.tif",
-  "byte_path": "./sentinel2_data/S2C_50TMK_20260111_0_L2A_byte.tif",
+  "rgb_path": "./sentinel_data/S2C_50TMK_20260111_0_L2A_RGB.tif",
+  "byte_path": "./sentinel_data/S2C_50TMK_20260111_0_L2A_byte.tif",
   "status": "completed"
 }
 ```

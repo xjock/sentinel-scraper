@@ -20,7 +20,7 @@ var (
 
 func main() {
 	configPath := flag.String("config", "config.json", "Path to configuration JSON file")
-	destDir := flag.String("dest", "./sentinel2_data", "Destination directory for downloaded files")
+	destDir := flag.String("dest", "./sentinel_data", "Destination directory for downloaded files")
 	setupAuth := flag.Bool("setup-auth", false, "Interactive authentication setup wizard (CLI)")
 	setupFlag := flag.Bool("setup", false, "Open web-based setup wizard")
 	versionFlag := flag.Bool("version", false, "Print version and exit")

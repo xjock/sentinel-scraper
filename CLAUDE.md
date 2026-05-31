@@ -36,7 +36,7 @@ The tool supports three interchangeable sources, selected via `settings.json` (`
 | Task | Command |
 |------|---------|
 | Build binary | `go build -o sentinel-scraper .` or `make build` |
-| Run | `go run . -config config.json -dest ./sentinel2_data` or `make run` |
+| Run | `go run . -config config.json -dest ./sentinel_data` or `make run` |
 | Format | `go fmt ./...` or `make fmt` |
 | Vet | `go vet ./...` or `make vet` |
 | Test | `go test ./...` |
@@ -49,7 +49,7 @@ CI runs `go build`, `go fmt` check, and `go vet`.
 ## CLI Flags
 
 - `-config` — path to JSON config file (default: `config.json`)
-- `-dest` — destination directory for downloads (default: `./sentinel2_data`)
+- `-dest` — destination directory for downloads (default: `./sentinel_data`)
 - `-setup` — open web-based setup wizard in browser
 - `-setup-auth` — interactive CLI authentication setup wizard
 
