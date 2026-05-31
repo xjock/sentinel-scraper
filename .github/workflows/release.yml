@@ -24,7 +24,7 @@ jobs:
         run: |
           make bundle-assets
           VERSION=${GITHUB_REF_NAME#v}
-          go build -ldflags "-s -w -X main.version=$VERSION" -o "dist/sentinel2-scraper_${VERSION}_windows_amd64.exe" .
+          go build -ldflags "-s -w -X main.version=$VERSION" -o "dist/sentinel-scraper_${VERSION}_windows_amd64.exe" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

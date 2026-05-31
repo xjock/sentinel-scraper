@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"sentinel2-go/internal/bundle"
+	"sentinel-scraper/internal/bundle"
 )
 
 // removeWithRetry 在 Windows 上 GDAL 进程刚退出时文件句柄可能未立即释放，

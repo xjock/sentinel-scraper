@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(sentinel2-go VERSION 0.1.1 LANGUAGES NONE)
+project(sentinel-scraper VERSION 0.1.1 LANGUAGES NONE)
 
 # -----------------------------------------------------------------------------
 # 1. Find Go
@@ -19,7 +19,7 @@ message(STATUS "Found Go: ${GO_VERSION}")
 # -----------------------------------------------------------------------------
 # 2. Build the Go binary
 # -----------------------------------------------------------------------------
-set(GO_OUTPUT ${CMAKE_BINARY_DIR}/sentinel2-scraper${CMAKE_EXECUTABLE_SUFFIX})
+set(GO_OUTPUT ${CMAKE_BINARY_DIR}/sentinel-scraper${CMAKE_EXECUTABLE_SUFFIX})
 
 # Collect Go sources for dependency tracking
 file(GLOB GO_SOURCES ${CMAKE_SOURCE_DIR}/*.go)
@@ -29,7 +29,7 @@ add_custom_command(
     COMMAND ${GO_EXECUTABLE} build -o ${GO_OUTPUT} .
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS ${GO_SOURCES}
-    COMMENT "Building sentinel2-scraper..."
+    COMMENT "Building sentinel-scraper..."
     VERBATIM
 )
 
@@ -105,9 +105,9 @@ endif()
 # -----------------------------------------------------------------------------
 # 5. CPack packaging
 # -----------------------------------------------------------------------------
-set(CPACK_PACKAGE_NAME "sentinel2-scraper")
+set(CPACK_PACKAGE_NAME "sentinel-scraper")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-set(CPACK_PACKAGE_VENDOR "sentinel2-scraper")
+set(CPACK_PACKAGE_VENDOR "sentinel-scraper")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Sentinel-2 L2A imagery downloader and RGB composer")
 set(CPACK_GENERATOR "ZIP")
 

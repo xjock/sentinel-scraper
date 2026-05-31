@@ -1,4 +1,4 @@
-# sentinel2-go Skill 化设计方案
+# sentinel-scraper Skill 化设计方案
 
 > 目标：将单机 CLI 工具升级为可供其他 agent / 服务调用的可编排能力。
 
@@ -6,7 +6,7 @@
 
 ## 背景
 
-当前 `sentinel2-go` 是一个单文件 Go CLI，功能聚焦：
+当前 `sentinel-scraper` 是一个单文件 Go CLI，功能聚焦：
 1. 查询 Earth Search STAC API
 2. 按云量、日期、BBox 过滤 Sentinel-2 L2A 影像
 3. 并发下载指定波段（COG）
@@ -228,9 +228,9 @@ type TaskStore struct {
 将 `main.go` 单文件拆分为以下包，MCP Server 和 HTTP Server 共用：
 
 ```
-sentinel2-go/
+sentinel-scraper/
 ├── cmd/
-│   ├── sentinel2-go/          ← 原 CLI 入口
+│   ├── sentinel-scraper/          ← 原 CLI 入口
 │   ├── sentinel2-mcp/         ← MCP Server 入口
 │   └── sentinel2-api/         ← HTTP API Server 入口
 ├── internal/

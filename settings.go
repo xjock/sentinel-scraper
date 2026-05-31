@@ -71,7 +71,7 @@ func promptSatellite() SatelliteType {
 func setupAuthWizard() {
 	existing, _ := loadSettings()
 
-	fmt.Println("=== sentinel2-go 认证配置 ===")
+	fmt.Println("=== sentinel-scraper 认证配置 ===")
 	fmt.Println()
 	fmt.Println("选择数据源:")
 	fmt.Println("  1) Earth Search — 无需认证，需翻墙")
@@ -183,7 +183,7 @@ func settingsPath() string {
 	if err != nil {
 		home = "."
 	}
-	return filepath.Join(home, ".sentinel2-go", "settings.json")
+	return filepath.Join(home, ".sentinel-scraper", "settings.json")
 }
 
 type Settings struct {
@@ -250,7 +250,7 @@ const setupHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>sentinel2-go Setup</title>
+<title>sentinel-scraper Setup</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -328,7 +328,7 @@ const setupHTML = `<!DOCTYPE html>
 </head>
 <body>
 <div class="container">
-  <h1>sentinel2-go 数据源配置</h1>
+  <h1>sentinel-scraper 数据源配置</h1>
   <p class="desc">选择数据源、卫星类型和认证方式。</p>
   <form method="POST" action="/">
     <div class="field">

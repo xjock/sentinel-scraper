@@ -1,3 +1,3 @@
-module sentinel2-go
+module sentinel-scraper
 
 go 1.26

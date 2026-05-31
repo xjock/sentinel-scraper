@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"sentinel2-go/internal/bundle"
+	"sentinel-scraper/internal/bundle"
 )
 
 var (

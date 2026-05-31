@@ -1,4 +1,4 @@
-# sentinel2-go 重构方案
+# sentinel-scraper 重构方案
 
 把单文件 `main.go`（1707 行）按职责拆分成多个源文件，所有文件保持在 `package main`，纯文件重组、不改函数名/签名。
 

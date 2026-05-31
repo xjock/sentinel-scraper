@@ -21,7 +21,7 @@ func ensureExtracted() (string, error) {
 		localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
 	}
 
-	baseDir := filepath.Join(localAppData, "sentinel2-scraper", "bundle")
+	baseDir := filepath.Join(localAppData, "sentinel-scraper", "bundle")
 
 	hash := sha256.Sum256(windowsAssets)
 	hashStr := hex.EncodeToString(hash[:8])

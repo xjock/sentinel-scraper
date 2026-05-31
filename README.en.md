@@ -1,17 +1,18 @@
-# Sentinel-2 Go Fetcher
+# Sentinel-1/2 Go Fetcher
 
 English | [中文](README.md)
 
-A lightweight Go CLI for searching and downloading Sentinel-2 L2A satellite imagery. Supports multiple data sources, web/terminal setup wizards, resumable downloads, automatic RGB composition with black-border trimming, and outputs Cloud Optimized GeoTIFFs (COG). **Pure Go standard library — zero external Go dependencies.**
+A lightweight Go CLI for searching and downloading Sentinel-1 (SAR) and Sentinel-2 (multispectral optical) satellite imagery. Supports multiple data sources, web/terminal setup wizards, resumable downloads, automatic RGB composition with black-border trimming, and outputs Cloud Optimized GeoTIFFs (COG). **Pure Go standard library — zero external Go dependencies.**
 
 > Current version: **v1.0**
 
 ## Features
 
-- **Three data sources**
+- **Three data sources + Sentinel-1 SAR support**
   - Earth Search STAC (public AWS, no auth)
   - CDSE STAC (Copernicus Data Space, per-band COG)
   - CDSE OData (Copernicus Data Space, full-scene SAFE ZIP)
+  - Sentinel-1 GRD / SLC (SAR radar, VV/VH polarization, cloud-independent)
 - **Setup wizards**: First run automatically opens a browser; SSH-friendly terminal mode also available
 - **Friendly band names**: `red` / `green` / `blue` / `nir` etc., automatically mapped to provider-specific asset keys
 - **Resume support**: HTTP `Range`-based resume; already-downloaded files are skipped
@@ -24,31 +25,31 @@ A lightweight Go CLI for searching and downloading Sentinel-2 L2A satellite imag
 
 ```bash
 git clone <your-repo-url>
-cd sentinel2-go
-go build -o sentinel2-scraper .
+cd sentinel-scraper
+go build -o sentinel-scraper .
 
 # First run — automatically opens a browser setup page
-./sentinel2-scraper
+./sentinel-scraper
 ```
 
-On first run, if `~/.sentinel2-go/settings.json` does not exist, the program starts a local HTTP server and opens your browser to choose a data source and enter credentials. The download flow resumes automatically once configuration is saved.
+On first run, if `~/.sentinel-scraper/settings.json` does not exist, the program starts a local HTTP server and opens your browser to choose a data source and enter credentials. The download flow resumes automatically once configuration is saved.
 
 ## Setup Wizard
 
 ### First Run (Auto)
 
 ```bash
-./sentinel2-scraper
+./sentinel-scraper
 ```
 
 ### Manual Reconfiguration
 
 ```bash
 # Web wizard (opens a browser)
-./sentinel2-scraper -setup
+./sentinel-scraper -setup
 
 # Terminal wizard (no browser, SSH-friendly)
-./sentinel2-scraper -setup-auth
+./sentinel-scraper -setup-auth
 ```
 
 ### Data Source Options
@@ -67,25 +68,27 @@ On first run, if `~/.sentinel2-go/settings.json` does not exist, the program sta
 3. In the setup wizard, enter your CDSE login email and password
 4. Save and continue
 
-Settings are stored in `~/.sentinel2-go/settings.json` with mode `0600` (owner read/write only). **Passwords are stored in plaintext** — protect your home directory permissions accordingly.
+Settings are stored in `~/.sentinel-scraper/settings.json` with mode `0600` (owner read/write only). **Passwords are stored in plaintext** — protect your home directory permissions accordingly.
 
 ### Data Source Comparison
 
-| Dimension | Earth Search STAC | CDSE STAC | CDSE OData |
-|-----------|-------------------|-----------|------------|
-| **Download granularity** | Per-band COG (50–200 MB / band) | Per-band COG (50–200 MB / band) | Full-scene ZIP (500 MB–1 GB+) |
-| **Authentication** | None | CDSE account required | CDSE account required |
-| **Speed** | Fast (AWS CloudFront CDN) | Medium (EU direct) | Slow (on-the-fly packaging + large files) |
-| **Access from China** | Often requires VPN | Often requires VPN | Generally accessible without VPN |
-| **Resume support** | ✅ | ✅ | ✅ |
-| **RGB composite** | ✅ Auto | ✅ Auto | ✅ Auto (extracts R10m B02/B03/B04, then composites) |
-| **KML output** | ✅ | ✅ | ✅ |
+| Dimension | Earth Search STAC | CDSE STAC | CDSE OData | Sentinel-1 |
+|-----------|-------------------|-----------|------------|------------|
+| **Download granularity** | Per-band COG (50–200 MB / band) | Per-band COG (50–200 MB / band) | Full-scene ZIP (500 MB–1 GB+) | Per-band COG / full-scene ZIP |
+| **Authentication** | None | CDSE account required | CDSE account required | None / CDSE account required |
+| **Speed** | Fast (AWS CloudFront CDN) | Medium (EU direct) | Slow (on-the-fly packaging + large files) | Medium |
+| **Access from China** | Often requires VPN | Often requires VPN | Generally accessible without VPN | Generally accessible without VPN (OData) |
+| **Resume support** | ✅ | ✅ | ✅ | ✅ |
+| **RGB composite** | ✅ Auto | ✅ Auto | ✅ Auto (extracts R10m B02/B03/B04, then composites) | ❌ SAR has no RGB |
+| **Cloud filter** | ✅ | ✅ | ✅ | ❌ SAR is cloud-independent |
+| **KML output** | ✅ | ✅ | ✅ | ✅ |
 
 **Recommendations:**
 
 - **Good network, want speed** → Earth Search STAC (default, fastest)
 - **Earth Search unreachable, or need an official source** → CDSE STAC (per-band)
 - **Need the full SAFE product (all bands + metadata) or VPN-free access** → CDSE OData
+- **Need SAR radar data (all-weather, cloud-penetrating)** → Sentinel-1 GRD/SLC
 
 ### `settings.json` Example
 
@@ -126,7 +129,7 @@ Settings are stored in `~/.sentinel2-go/settings.json` with mode `0600` (owner r
 | `start_date` | `string` | Start date `YYYY-MM-DD` |
 | `end_date` | `string` | End date `YYYY-MM-DD` |
 | `max_cloud` | `float64` | Maximum cloud cover percentage (0–100) |
-| `bands` | `[string]` | List of bands to download (friendly names) |
+| `bands` | `[string]` | List of bands or polarizations to download (e.g. `red`/`green`/`blue` for S2, `vv`/`vh` for S1) |
 | `limit` | `int` | Max STAC items returned (default: 20) |
 | `max_workers` | `int` | Concurrent download workers (default: 4) |
 | `max_retries` | `int` | Retry attempts per failed download (default: 3) |
@@ -200,7 +203,7 @@ Use **friendly names** in `config.json`. They are automatically mapped to provid
 
 ## Output
 
-### STAC mode (Earth Search / CDSE STAC)
+### STAC mode — Sentinel-2 (Earth Search / CDSE STAC)
 
 ```
 sentinel2_data/
@@ -214,6 +217,18 @@ sentinel2_data/
 ```
 
 CDSE STAC source files are JPEG 2000 (`.jp2`); GDAL reads them transparently. RGB output is stretched to 8-bit GeoTIFF (fixed 0–3000 → 0–255), then `gdal_trace_outline` + `gdalwarp` + `gdal_merge_simple` produce an RGBA image with the nodata black borders automatically removed.
+
+### STAC mode — Sentinel-1 (Earth Search / CDSE STAC)
+
+```
+sentinel2_data/
+  S1A_IW_GRDH_1SDV_20250105_030000_039A_vv.tif
+  S1A_IW_GRDH_1SDV_20250105_030000_039A_vh.tif
+  S1A_IW_GRDH_1SDV_20250105_030000_039A.kml
+  ...
+```
+
+Sentinel-1 SAR data is downloaded as raw polarization files. **No RGB composition** is performed.
 
 ### OData mode (CDSE OData)
 
@@ -231,10 +246,10 @@ OData mode also extracts `R10m/B02/B03/B04` from the ZIP, builds the RGB composi
 
 ```bash
 # Direct build
-go build -o sentinel2-scraper .
+go build -o sentinel-scraper .
 
 # Or use the Makefile
-make build           # equivalent to go build -o sentinel2-scraper .
+make build           # equivalent to go build -o sentinel-scraper .
 make run             # build and run
 make fmt             # go fmt ./...
 make vet             # go vet ./...
@@ -252,11 +267,11 @@ go test ./...
 ## Docker
 
 ```bash
-docker build -t sentinel2-scraper .
+docker build -t sentinel-scraper .
 docker run --rm \
   -v $(pwd)/config.json:/app/config.json \
   -v $(pwd)/sentinel2_data:/app/sentinel2_data \
-  sentinel2-scraper
+  sentinel-scraper
 ```
 
 ## Project Structure
@@ -282,6 +297,7 @@ The code lives in `package main`, split into 9 Go files by responsibility:
 - **Start with Earth Search**: fastest, AWS CloudFront global CDN; but may be unreachable from some networks
 - **If Earth Search fails** → switch to **CDSE STAC**: per-band downloads, smaller files
 - **Need the full SAFE product, or VPN-free access** → use **CDSE OData**: full-scene ZIP, slow but complete
+- **Need SAR radar data (all-weather, cloud-penetrating)** → Sentinel-1 GRD/SLC
 
 **Q: Downloads fail or time out?**
 
@@ -292,18 +308,38 @@ The code lives in `package main`, split into 9 Go files by responsibility:
 
 **Q: No items returned?**
 
-- Ensure your date range falls within the Sentinel-2 archive
-- Ensure the bbox covers land
-- Increase `max_cloud` or remove the cloud filter
+- Ensure your date range falls within the Sentinel-1/2 archive
+- Ensure the bbox covers land or sea (Sentinel-1 also covers ocean)
+- Increase `max_cloud` or remove the cloud filter (Sentinel-2 only)
 - Coverage may differ slightly between data sources
 
 **Q: How do I switch data sources?**
 
 ```bash
-./sentinel2-scraper -setup
+./sentinel-scraper -setup
 ```
 
 You can switch any time; previously-downloaded files are unaffected.
+
+**Q: What is the difference between Sentinel-1 and Sentinel-2?**
+
+- **Sentinel-2**: Multispectral optical imagery, affected by clouds. Ideal for vegetation monitoring, land use, water quality, etc.
+- **Sentinel-1**: C-band SAR radar, **cloud-independent**, capable of penetrating clouds and operating day/night. Ideal for surface deformation monitoring, flood mapping, vessel detection, etc.
+- Sentinel-1 does not need cloud filtering and does not produce RGB composites.
+
+**Q: How do I download Sentinel-1 data?**
+
+Set `"satellite": "sentinel-1-grd"` (or `"sentinel-1-slc"`) and `"bands": ["vv", "vh"]` in `config.json`:
+
+```json
+{
+  "satellite": "sentinel-1-grd",
+  "bands": ["vv", "vh"],
+  "bbox": [116.2, 39.8, 116.6, 40.0],
+  "start_date": "2026-04-01",
+  "end_date": "2026-04-15"
+}
+```
 
 **Q: Can I use a custom STAC API?**
 

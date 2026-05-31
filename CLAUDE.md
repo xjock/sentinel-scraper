@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`sentinel2-go` is a Go CLI that queries STAC/OData APIs and downloads Sentinel-2 L2A satellite imagery bands as Cloud Optimized GeoTIFFs (or full SAFE ZIPs). It is pure standard library — zero external Go dependencies.
+`sentinel-scraper` is a Go CLI that queries STAC/OData APIs and downloads Sentinel-2 L2A satellite imagery bands as Cloud Optimized GeoTIFFs (or full SAFE ZIPs). It is pure standard library — zero external Go dependencies.
 
 The code is split across 9 files in `package main`:
 
@@ -12,7 +12,7 @@ The code is split across 9 files in `package main`:
 |------|------|
 | `main.go` | Entrypoint, CLI flags, STAC flow orchestration, worker pool setup |
 | `config.go` | `Config`/`SearchOptions` types, `LoadConfig`, `mergeSettings` |
-| `settings.go` | User-level persistent settings (`~/.sentinel2-go/settings.json`), CLI/Web setup wizards |
+| `settings.go` | User-level persistent settings (`~/.sentinel-scraper/settings.json`), CLI/Web setup wizards |
 | `auth.go` | `Authenticator` interface, `NoOpAuth`, `CDSEAuth` (Keycloak OAuth2 password grant) |
 | `stac.go` | STAC search, cloud filtering, per-band downloads, KML generation |
 | `odata.go` | CDSE OData catalog search, full-scene ZIP download, JPEG2000 extraction, worker pool |
@@ -35,14 +35,14 @@ The tool supports three interchangeable sources, selected via `settings.json` (`
 
 | Task | Command |
 |------|---------|
-| Build binary | `go build -o sentinel2-go .` or `make build` |
+| Build binary | `go build -o sentinel-scraper .` or `make build` |
 | Run | `go run . -config config.json -dest ./sentinel2_data` or `make run` |
 | Format | `go fmt ./...` or `make fmt` |
 | Vet | `go vet ./...` or `make vet` |
 | Test | `go test ./...` |
 | Clean | `make clean` |
 | Package (Windows + GDAL bundle) | `make package` |
-| Docker build | `docker build -t sentinel2-go .` or `make docker` |
+| Docker build | `docker build -t sentinel-scraper .` or `make docker` |
 
 CI runs `go build`, `go fmt` check, and `go vet`.
 
@@ -57,7 +57,7 @@ CI runs `go build`, `go fmt` check, and `go vet`.
 
 **Data flow (STAC mode):**
 1. `LoadConfig(path)` reads `config.json` into `Config`. Defaults: `limit=20`, `max_workers=4`, `max_retries=3`.
-2. `mergeSettings(cfg)` overlays `~/.sentinel2-go/settings.json` (source, STAC URL, collection, auth) onto the loaded config.
+2. `mergeSettings(cfg)` overlays `~/.sentinel-scraper/settings.json` (source, STAC URL, collection, auth) onto the loaded config.
 3. `SearchItems(opts, auth)` performs an HTTP GET to the STAC `/search` endpoint with bbox, datetime range, limit, and optional server-side cloud filter. Returns `STACItemCollection`.
 4. `FilterItemsByCloud(items, maxCloud)` filters the `features` slice. Missing `eo:cloud_cover` is treated as pass-through (optimistic).
 5. `DownloadAsset(asset, destDir, itemID, bandName, auth)` downloads each requested band via `asset.Href` with HTTP `Range` resume support. Skips files that already exist.
@@ -81,4 +81,4 @@ CI runs `go build`, `go fmt` check, and `go vet`.
 - File naming convention: `<item.ID>_<band>.tif`.
 - GDAL binaries and DLLs are expected either in the current directory (Windows bundle) or on `PATH`. `gdal.go:findGDALTool` checks for `gdal305.dll` in the same directory before falling back to PATH.
 - `gdal.go:gdalEnv()` injects `PROJ_DATA` so bundled PROJ data can be found.
-- Settings are stored in `~/.sentinel2-go/settings.json` with file mode `0600`. Credentials are stored **in plaintext** inside that file.
+- Settings are stored in `~/.sentinel-scraper/settings.json` with file mode `0600`. Credentials are stored **in plaintext** inside that file.

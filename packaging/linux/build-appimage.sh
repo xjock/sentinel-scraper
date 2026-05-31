@@ -14,7 +14,7 @@ mkdir -p "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
 
 # Build Go binary
 echo "Building Go binary..."
-GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${VERSION}" -o "${APPDIR}/usr/bin/sentinel2-scraper" "${ROOT_DIR}"
+GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${VERSION}" -o "${APPDIR}/usr/bin/sentinel-scraper" "${ROOT_DIR}"
 
 # Collect GDAL dependencies
 echo "Collecting GDAL dependencies..."
@@ -43,10 +43,10 @@ fi
 # AppImage metadata
 cp "${SCRIPT_DIR}/AppRun" "${APPDIR}/AppRun"
 chmod +x "${APPDIR}/AppRun"
-cp "${SCRIPT_DIR}/sentinel2-go.desktop" "${APPDIR}/sentinel2-go.desktop"
-cp "${SCRIPT_DIR}/sentinel2-go.desktop" "${APPDIR}/usr/share/applications/sentinel2-go.desktop"
-cp "${SCRIPT_DIR}/icon.png" "${APPDIR}/sentinel2-go.png"
-cp "${SCRIPT_DIR}/icon.png" "${APPDIR}/usr/share/icons/hicolor/256x256/apps/sentinel2-go.png"
+cp "${SCRIPT_DIR}/sentinel-scraper.desktop" "${APPDIR}/sentinel-scraper.desktop"
+cp "${SCRIPT_DIR}/sentinel-scraper.desktop" "${APPDIR}/usr/share/applications/sentinel-scraper.desktop"
+cp "${SCRIPT_DIR}/icon.png" "${APPDIR}/sentinel-scraper.png"
+cp "${SCRIPT_DIR}/icon.png" "${APPDIR}/usr/share/icons/hicolor/256x256/apps/sentinel-scraper.png"
 
 # Download appimagetool if needed
 if [ ! -f /tmp/appimagetool-x86_64.AppImage ]; then
@@ -56,6 +56,6 @@ fi
 
 # Build AppImage
 mkdir -p "${ROOT_DIR}/dist"
-/tmp/appimagetool-x86_64.AppImage "${APPDIR}" "${ROOT_DIR}/dist/sentinel2-scraper_${VERSION}_linux_amd64.AppImage"
+/tmp/appimagetool-x86_64.AppImage "${APPDIR}" "${ROOT_DIR}/dist/sentinel-scraper_${VERSION}_linux_amd64.AppImage"
 
-echo "AppImage built: ${ROOT_DIR}/dist/sentinel2-scraper_${VERSION}_linux_amd64.AppImage"
+echo "AppImage built: ${ROOT_DIR}/dist/sentinel-scraper_${VERSION}_linux_amd64.AppImage"
