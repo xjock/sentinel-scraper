@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -12,6 +13,9 @@ type kmlField struct{ Name, Value string }
 // writeKMLFile 写出标准 KML Polygon。fields 顺序保留;空 Value 跳过。
 // 调用者负责:数值格式化、skip-if-exists、[saved]/[skip] 日志。
 func writeKMLFile(kmlPath, displayName string, ring [][]float64, fields []kmlField) error {
+	if err := os.MkdirAll(filepath.Dir(kmlPath), 0755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
 	var coords strings.Builder
 	for _, p := range ring {
 		if len(p) >= 2 {

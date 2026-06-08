@@ -16,10 +16,9 @@ import (
 	"time"
 )
 
-const (
-	cdseODataCatalogURL  = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
-	cdseODataDownloadURL = "https://zipper.dataspace.copernicus.eu/odata/v1/Products"
-)
+var cdseODataCatalogURL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
+
+var cdseODataDownloadURL = "https://zipper.dataspace.copernicus.eu/odata/v1/Products"
 
 // OData types for CDSE OData Catalog API.
 type odataProduct struct {
@@ -94,7 +93,7 @@ func queryODataProducts(auth Authenticator, cfg *Config) ([]odataProduct, error)
 				cloudFilters = append(cloudFilters, fmt.Sprintf("att/OData.CSC.DoubleAttribute/Value lt %.1f", cfg.MaxCloud))
 			}
 			filters = append(filters, fmt.Sprintf(
-				"Attributes/OData.CSC.DoubleAttribute/any(%s)",
+				"Attributes/OData.CSC.DoubleAttribute/any(att:%s)",
 				strings.Join(cloudFilters, " and "),
 			))
 		}
@@ -411,7 +410,7 @@ func processODataProduct(zipPath, destDir, productName string, sat SatelliteType
 
 	if err := buildRGBA(bytePath, rgbaPath, workDir); err != nil {
 		fmt.Fprintf(os.Stderr, "  [rgba skip] %s: %v\n", productName, err)
-		return nil
+		return err
 	}
 
 	os.Remove(bytePath)

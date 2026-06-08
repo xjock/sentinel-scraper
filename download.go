@@ -120,8 +120,13 @@ func resumableDownload(
 			if total > 0 && offset == total {
 				return offset, total, true, nil
 			}
-			// 服务器不支持 Range,从头重新下载
-			os.Remove(destPath)
+			// 服务器不支持 Range,从头重新下载（保留已有内容到 .bak）
+			os.Remove(destPath + ".bak")
+			if err := os.Rename(destPath, destPath+".bak"); err == nil {
+				defer os.Remove(destPath + ".bak")
+			} else {
+				os.Remove(destPath)
+			}
 			offset = 0
 		}
 		f, err := os.Create(destPath)

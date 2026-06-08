@@ -24,6 +24,7 @@ type satConfig struct {
 	KnownBands       []string
 	ODataCollection  string
 	ODataProductType string
+	ASFProductType   string
 }
 
 // satelliteConfigs maps each supported satellite type to its configuration.
@@ -57,6 +58,7 @@ var satelliteConfigs = map[SatelliteType]satConfig{
 		KnownBands:       []string{"vv", "vh", "hh", "hv"},
 		ODataCollection:  "SENTINEL-1",
 		ODataProductType: "GRD",
+		ASFProductType:   "GRD_HD",
 	},
 	SatS1SLC: {
 		Collection:       "sentinel-1-slc",
@@ -70,6 +72,20 @@ var satelliteConfigs = map[SatelliteType]satConfig{
 		KnownBands:       []string{"vv", "vh", "hh", "hv"},
 		ODataCollection:  "SENTINEL-1",
 		ODataProductType: "SLC",
+		ASFProductType:   "SLC",
+	},
+	SatHLS: {
+		Collection:       "HLSS30.v2.0",
+		CDSECollection:   "",
+		NeedsCloudFilter: true,
+		SupportsRGB:      true,
+		DefaultBands:     []string{"red", "green", "blue"},
+		BandMap: map[string]string{
+			"coastal": "B01", "blue": "B02", "green": "B03", "red": "B04",
+			"nir": "B08", "nir08": "B8A", "nir09": "B09",
+			"swir16": "B11", "swir22": "B12", "fmask": "Fmask",
+		},
+		KnownBands: []string{"coastal", "blue", "green", "red", "nir", "nir08", "nir09", "swir16", "swir22", "fmask"},
 	},
 }
 
@@ -143,13 +159,21 @@ func SearchItems(opts SearchOptions, auth Authenticator) (*STACItemCollection, e
 		opts.Satellite = SatS2L2A
 	}
 	if opts.Limit == 0 {
-		opts.Limit = 10
+		opts.Limit = 20
 	}
 	if len(opts.Bbox) != 4 {
 		return nil, fmt.Errorf("bbox must have 4 elements [west,south,east,north]")
 	}
 	bboxStr := fmt.Sprintf("%f,%f,%f,%f", opts.Bbox[0], opts.Bbox[1], opts.Bbox[2], opts.Bbox[3])
-	datetime := fmt.Sprintf("%sT00:00:00Z/%sT23:59:59Z", opts.StartDate, opts.EndDate)
+	startDT := opts.StartDate
+	if !strings.Contains(startDT, "T") {
+		startDT += "T00:00:00Z"
+	}
+	endDT := opts.EndDate
+	if !strings.Contains(endDT, "T") {
+		endDT += "T23:59:59Z"
+	}
+	datetime := startDT + "/" + endDT
 
 	stacURL := opts.STACURL
 	if stacURL == "" {

@@ -13,21 +13,97 @@ import (
 
 var (
 	EarthSearchURL  = "https://earth-search.aws.element84.com/v1"
+	EarthdataURL    = "https://cmr.earthdata.nasa.gov/stac"
 	Collection      = "sentinel-2-l2a"
 	DownloadTimeout = 10 * time.Minute
 	version         = "dev"
 )
 
 func main() {
-	configPath := flag.String("config", "config.json", "Path to configuration JSON file")
-	destDir := flag.String("dest", "./sentinel_data", "Destination directory for downloaded files")
-	setupAuth := flag.Bool("setup-auth", false, "Interactive authentication setup wizard (CLI)")
-	setupFlag := flag.Bool("setup", false, "Open web-based setup wizard")
-	versionFlag := flag.Bool("version", false, "Print version and exit")
+	// CLI flags — designed for programmatic invocation by LLM agents.
+	// Each usage string includes: purpose, type, default, required? yes/no, example.
+	configPath := flag.String("config", "config.json",
+		"Path to the search-configuration JSON file.\n"+
+		"  Type:     string (file path)\n"+
+		"  Default:  config.json\n"+
+		"  Required: no (auto-created with sensible defaults if missing)\n"+
+		"  Example:  -config config.json\n\n"+
+		"  Config file fields (JSON):\n"+
+		"    bbox        [float×4]  Bounding box [west, south, east, north] in degrees.\n"+
+		"                         Example: [116.2, 39.8, 116.6, 40.0]\n"+
+		"    start_date  string    Search start date in YYYY-MM-DD format.\n"+
+		"                         Example: \"2024-01-01\"\n"+
+		"    end_date    string    Search end date in YYYY-MM-DD format.\n"+
+		"                         Example: \"2024-01-31\"\n"+
+		"    min_cloud   float     Minimum cloud cover percentage (0–100). Only for optical.\n"+
+		"                         Default: 0\n"+
+		"    max_cloud   float     Maximum cloud cover percentage (0–100). Only for optical.\n"+
+		"                         Default: 100 (no filter)\n"+
+		"    bands       []string  Band keys to download.\n"+
+		"                         S2 defaults: [\"red\", \"green\", \"blue\"]\n"+
+		"                         S1 defaults: [\"vv\", \"vh\"]\n"+
+		"                         HLS defaults: [\"red\", \"green\", \"blue\"]\n"+
+		"    limit       int       Maximum number of STAC items to return.\n"+
+		"                         Default: 20\n"+
+		"    max_workers int       Number of concurrent download workers.\n"+
+		"                         Default: 4\n"+
+		"    max_retries int       Number of retry attempts for each failed download.\n"+
+		"                         Default: 3\n"+
+		"    satellite   string    Satellite mission. Values: \"sentinel-2\", \"sentinel-1\", \"s2\", \"s1\", \"hls\"\n"+
+		"                         Default: \"sentinel-2\"\n"+
+		"    product     string    Sentinel-1 product type. Values: \"grd\" | \"slc\"\n"+
+		"                         Only used when satellite=\"sentinel-1\". Default: \"grd\"")
+	destDir := flag.String("dest", "./sentinel_data",
+		"Output directory where downloaded imagery bands and KML files are stored.\n"+
+		"  Type:    string (directory path)\n"+
+		"  Default: ./sentinel_data\n"+
+		"  Required: no\n"+
+		"  Example: -dest ./sentinel_data")
+	setupAuth := flag.Bool("setup-auth", false,
+		"Launch an interactive CLI wizard to configure authentication credentials.\n"+
+		"  Type:    boolean flag (no value needed)\n"+
+		"  Default: false\n"+
+		"  Required: no\n"+
+		"  Scope:   Prompts for CDSE (Copernicus) and Earthdata (NASA) username/password,\n"+
+		"           then writes them to ~/.sentinel-scraper/settings.json\n"+
+		"  Example: -setup-auth")
+	setupFlag := flag.Bool("setup", false,
+		"Open a web-based setup wizard in the default browser for GUI configuration.\n"+
+		"  Type:    boolean flag (no value needed)\n"+
+		"  Default: false\n"+
+		"  Required: no\n"+
+		"  Scope:   Same as -setup-auth but via a local HTTP page instead of CLI prompts.\n"+
+		"  Example: -setup")
+	versionFlag := flag.Bool("version", false,
+		"Print the sentinel-scraper version and exit immediately.\n"+
+		"  Type:    boolean flag (no value needed)\n"+
+		"  Default: false\n"+
+		"  Required: no\n"+
+		"  Example: -version")
+	defaultFlag := flag.Bool("default", false,
+		"Generate a default config.json and exit immediately.\n"+
+		"  Type:    boolean flag (no value needed)\n"+
+		"  Default: false\n"+
+		"  Required: no\n"+
+		"  Scope:   Writes a default configuration file to the path specified by -config.\n"+
+		"  Example: -default")
 	flag.Parse()
+
+	if len(os.Args) == 1 {
+		flag.Usage()
+		os.Exit(0)
+	}
 
 	if *versionFlag {
 		fmt.Println(version)
+		return
+	}
+
+	if *defaultFlag {
+		if err := WriteDefaultConfig(*configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create default config: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -69,25 +145,11 @@ func main() {
 	}
 	mergeSettings(cfg)
 
-	settings, _ := loadSettings()
-	if settings != nil && settings.Source == "cdse_odata" {
-		if cfg.Auth == nil || cfg.Auth.Username == "" {
-			fmt.Fprintln(os.Stderr, "CDSE OData requires authentication. Run with -setup-auth to configure.")
-			os.Exit(1)
-		}
-		auth := NewCDSEAuth(cfg.Auth.Username, cfg.Auth.Password)
-		if err := runODataFlow(cfg, auth, *destDir); err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
+	// 来源完全由程序根据卫星类型和可用认证自动编排
+	runWithFallback(cfg, *destDir, *configPath)
+}
 
-	var auth Authenticator = NoOpAuth{}
-	if cfg.Auth != nil && cfg.Auth.Username != "" && cfg.Auth.Password != "" {
-		auth = NewCDSEAuth(cfg.Auth.Username, cfg.Auth.Password)
-	}
-
+func runSTACFlow(cfg *Config, auth Authenticator, destDir, configPath string) error {
 	sat := SatelliteType(cfg.Satellite)
 	if sat == "" {
 		sat = SatS2L2A
@@ -111,17 +173,21 @@ func main() {
 		Satellite:  sat,
 	}
 
+	authLabel := "none"
+	if cfg.Auth != nil {
+		if _, ok := auth.(*EarthdataAuth); ok {
+			authLabel = "Bearer (Earthdata)"
+		} else {
+			authLabel = "OAuth2 (CDSE)"
+		}
+	}
+
 	fmt.Printf("Searching %s data...\n", sc.Collection)
-	fmt.Printf("  Config:    %s\n", *configPath)
-	fmt.Printf("  Dest:      %s\n", *destDir)
+	fmt.Printf("  Config:    %s\n", configPath)
+	fmt.Printf("  Dest:      %s\n", destDir)
 	fmt.Printf("  STAC URL:  %s\n", opts.STACURL)
 	fmt.Printf("  Collection: %s\n", opts.Collection)
-	fmt.Printf("  Auth:      %s\n", func() string {
-		if cfg.Auth != nil {
-			return "OAuth2 (CDSE)"
-		}
-		return "none"
-	}())
+	fmt.Printf("  Auth:      %s\n", authLabel)
 	fmt.Printf("  BBox:      %v (west, south, east, north)\n", opts.Bbox)
 	fmt.Printf("  Date:      %s to %s\n", opts.StartDate, opts.EndDate)
 	if sc.NeedsCloudFilter {
@@ -141,27 +207,26 @@ func main() {
 
 	stacCollection, err := SearchItems(opts, auth)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Search failed: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("search failed: %w", err)
 	}
 
 	if len(stacCollection.Features) == 0 {
 		fmt.Println("No items found.")
-		return
+		return fmt.Errorf("no items found in collection %s", opts.Collection)
 	}
 
 	items := FilterItemsByCloud(stacCollection.Features, opts.MinCloud, opts.MaxCloud, sat)
 	PrintItemSummary(items)
 
 	// 为已有数据补生成 KML
-	existingItems, err := scanExistingItems(*destDir, sat)
+	existingItems, err := scanExistingItems(destDir, sat)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to scan existing items: %v\n", err)
 	}
 	if len(existingItems) > 0 {
 		fmt.Println("\n=== Checking existing KML ===")
 		for itemID := range existingItems {
-			kmlPath := filepath.Join(*destDir, itemID+".kml")
+			kmlPath := filepath.Join(destDir, itemID+".kml")
 			if _, err := os.Stat(kmlPath); err == nil {
 				continue
 			}
@@ -171,7 +236,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "  [kml fail] %s: %v\n", itemID, err)
 				continue
 			}
-			if _, err := SaveKML(item, *destDir); err != nil {
+			if _, err := SaveKML(item, destDir); err != nil {
 				fmt.Fprintf(os.Stderr, "  [kml fail] %s: %v\n", itemID, err)
 			}
 		}
@@ -198,7 +263,7 @@ func main() {
 	total := 0
 	for _, item := range items {
 		fmt.Printf("\nItem: %s\n", item.ID)
-		if _, err := SaveKML(item, *destDir); err != nil {
+		if _, err := SaveKML(item, destDir); err != nil {
 			fmt.Fprintf(os.Stderr, "  [kml skip] %s: %v\n", item.ID, err)
 		}
 		for _, band := range cfg.Bands {
@@ -208,7 +273,7 @@ func main() {
 				fmt.Printf("  [warn] band '%s' not available (tried '%s')\n", band, assetKey)
 				continue
 			}
-			tasks <- downloadTask{itemID: item.ID, band: band, asset: asset, destDir: *destDir, maxRetries: cfg.MaxRetries, auth: auth}
+			tasks <- downloadTask{itemID: item.ID, band: band, asset: asset, destDir: destDir, maxRetries: cfg.MaxRetries, auth: auth}
 			total++
 		}
 	}
@@ -231,7 +296,7 @@ func main() {
 	if sc.SupportsRGB {
 		fmt.Println("\n=== Building RGB ===")
 		for _, item := range items {
-			if err := BuildRGB(*destDir, item.ID, sat); err != nil {
+			if err := BuildRGB(destDir, item.ID, sat); err != nil {
 				fmt.Fprintf(os.Stderr, "  [rgb skip] %s: %v\n", item.ID, err)
 			}
 		}
@@ -239,10 +304,127 @@ func main() {
 
 	fmt.Println("\nDone.")
 	if failed > 0 {
-		fmt.Printf("%d/%d downloads failed.\n", failed, total)
-		os.Exit(1)
+		return fmt.Errorf("%d/%d downloads failed", failed, total)
 	}
 	if skipped > 0 {
 		fmt.Printf("%d/%d already existed, skipped.\n", skipped, total)
 	}
+	return nil
+}
+
+// runWithFallback 按优先级自动尝试多个数据源，当一个来源失败时自动切换到下一个。
+// S2 优先级: Earth Search → CDSE STAC → CDSE OData
+// S1 优先级: Earth Search → ASF
+// HLS 优先级: Earthdata
+func runWithFallback(cfg *Config, destDir, configPath string) {
+	sat := SatelliteType(cfg.Satellite)
+	if sat == "" {
+		sat = SatS2L2A
+	}
+
+	settings, _ := loadSettings()
+	var cdseAuth, earthdataAuth *AuthConfig
+	if settings != nil {
+		if settings.CDSEAuth != nil && settings.CDSEAuth.Username != "" {
+			cdseAuth = settings.CDSEAuth
+		}
+		if settings.EarthdataAuth != nil && settings.EarthdataAuth.Username != "" {
+			earthdataAuth = settings.EarthdataAuth
+		}
+	}
+
+	type source struct {
+		name string
+		try  func() error
+	}
+
+	var sources []source
+
+	switch sat {
+	case SatS2L2A:
+		sources = append(sources, source{
+			name: "Earth Search (STAC)",
+			try: func() error {
+				c := *cfg
+				c.STACURL = EarthSearchURL
+				c.Collection = satelliteConfigs[SatS2L2A].Collection
+				return runSTACFlow(&c, NoOpAuth{}, destDir, configPath)
+			},
+		})
+		if cdseAuth != nil {
+			sources = append(sources, source{
+				name: "CDSE STAC",
+				try: func() error {
+					c := *cfg
+					c.STACURL = "https://stac.dataspace.copernicus.eu/v1"
+					c.Collection = satelliteConfigs[SatS2L2A].CDSECollection
+					return runSTACFlow(&c, NewCDSEAuth(cdseAuth.Username, cdseAuth.Password), destDir, configPath)
+				},
+			})
+			sources = append(sources, source{
+				name: "CDSE OData",
+				try: func() error {
+					c := *cfg
+					return runODataFlow(&c, NewCDSEAuth(cdseAuth.Username, cdseAuth.Password), destDir)
+				},
+			})
+		}
+	case SatS1GRD, SatS1SLC:
+		sources = append(sources, source{
+			name: "Earth Search (STAC)",
+			try: func() error {
+				c := *cfg
+				c.STACURL = EarthSearchURL
+				c.Collection = satelliteConfigs[sat].Collection
+				return runSTACFlow(&c, NoOpAuth{}, destDir, configPath)
+			},
+		})
+		if earthdataAuth != nil {
+			sources = append(sources, source{
+				name: "ASF",
+				try: func() error {
+					c := *cfg
+					return runASFFlow(&c, NewEarthdataAuth(earthdataAuth.Username, earthdataAuth.Password), destDir)
+				},
+			})
+		}
+	case SatHLS:
+		if earthdataAuth != nil {
+			sources = append(sources, source{
+				name: "Earthdata (NASA)",
+				try: func() error {
+					c := *cfg
+					c.STACURL = EarthdataURL + "/LPCLOUD"
+					c.Collection = satelliteConfigs[SatHLS].Collection
+					c.Satellite = string(SatHLS)
+					return runSTACFlow(&c, NewEarthdataAuth(earthdataAuth.Username, earthdataAuth.Password), destDir, configPath)
+				},
+			})
+		}
+	}
+
+	if len(sources) == 0 {
+		fmt.Fprintln(os.Stderr, "No available sources for the specified satellite. Authentication may be required.")
+		os.Exit(1)
+	}
+
+	var lastErr error
+	for i, src := range sources {
+		if i > 0 {
+			fmt.Println()
+		}
+		fmt.Printf(">>> [%d/%d] Trying %s...\n", i+1, len(sources), src.name)
+
+		err := src.try()
+		if err == nil {
+			fmt.Printf(">>> %s succeeded.\n", src.name)
+			return
+		}
+
+		fmt.Printf(">>> %s failed: %v\n", src.name, err)
+		lastErr = err
+	}
+
+	fmt.Fprintf(os.Stderr, "\nAll sources failed. Last error: %v\n", lastErr)
+	os.Exit(1)
 }

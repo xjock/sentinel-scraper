@@ -90,7 +90,6 @@ func BuildRGB(destDir string, itemID string, sat SatelliteType) error {
 		fmt.Printf("  [reuse] %s, retrying rgba\n", byteName)
 		if err := buildRGBA(bytePath, rgbaPath, destDir); err != nil {
 			fmt.Fprintf(os.Stderr, "  [rgba skip] %s: %v\n", itemID, err)
-			removeWithRetry(bytePath)
 			removeWithRetry(rgbPath)
 			return nil
 		}

@@ -23,5 +23,8 @@ jobs:
       - name: Format check
         run: test -z $(go fmt ./...)
 
+      - name: Test
+        run: go test ./...
+
       - name: Vet
         run: go vet ./...

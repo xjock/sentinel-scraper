@@ -15,6 +15,7 @@ const (
 	SatS2L2A SatelliteType = "sentinel-2-l2a"
 	SatS1GRD SatelliteType = "sentinel-1-grd"
 	SatS1SLC SatelliteType = "sentinel-1-slc"
+	SatHLS   SatelliteType = "hls"
 )
 
 // ParseSatelliteType infers the satellite type from a collection name.
@@ -26,9 +27,38 @@ func ParseSatelliteType(collection string) SatelliteType {
 			return SatS1SLC
 		}
 		return SatS1GRD
+	case strings.Contains(lower, "hls"):
+		return SatHLS
 	default:
 		return SatS2L2A
 	}
+}
+
+// ResolveSatelliteType resolves the satellite type from two-level params.
+// satellite: "sentinel-1", "sentinel-2", "s1", "s2", "hls"
+// product:   "grd", "slc" (only for sentinel-1)
+func ResolveSatelliteType(satellite, product string) SatelliteType {
+	lower := strings.ToLower(satellite)
+	// If the satellite string already contains the full type, use it directly.
+	if strings.Contains(lower, "slc") {
+		return SatS1SLC
+	}
+	if strings.Contains(lower, "grd") {
+		return SatS1GRD
+	}
+	switch {
+	case strings.Contains(lower, "hls"):
+		return SatHLS
+	case strings.Contains(lower, "sentinel-2") || lower == "s2":
+		return SatS2L2A
+	case strings.Contains(lower, "sentinel-1") || lower == "s1":
+		if strings.Contains(strings.ToLower(product), "slc") {
+			return SatS1SLC
+		}
+		return SatS1GRD
+	}
+	// Fallback: treat satellite as a collection name (backward compat)
+	return ParseSatelliteType(satellite)
 }
 
 type Config struct {
@@ -41,10 +71,13 @@ type Config struct {
 	Limit      int         `json:"limit"`
 	MaxWorkers int         `json:"max_workers"`
 	MaxRetries int         `json:"max_retries"`
-	Satellite  string      `json:"satellite,omitempty"`
-	STACURL    string      `json:"stac_url,omitempty"`
-	Collection string      `json:"collection,omitempty"`
-	Auth       *AuthConfig `json:"auth,omitempty"`
+	Satellite  string      `json:"satellite,omitempty"`  // sentinel-1, sentinel-2, s1, s2, hls
+	Product    string      `json:"product,omitempty"`    // grd, slc (仅 sentinel-1)
+
+	// Internal fields, populated by mergeSettings or runWithFallback.
+	Auth       *AuthConfig
+	STACURL    string
+	Collection string
 }
 
 type SearchOptions struct {
@@ -82,6 +115,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 0
 	}
+	if len(cfg.BBox) != 0 && len(cfg.BBox) != 4 {
+		return nil, fmt.Errorf("bbox must have 4 elements [west,south,east,north], got %d", len(cfg.BBox))
+	}
 	if cfg.MinCloud < 0 {
 		return nil, fmt.Errorf("min_cloud must be >= 0, got %f", cfg.MinCloud)
 	}
@@ -97,20 +133,17 @@ func LoadConfig(path string) (*Config, error) {
 		} else {
 			cfg.Satellite = string(SatS2L2A)
 		}
-	}
-	if cfg.STACURL == "" {
-		cfg.STACURL = EarthSearchURL
-	}
-	if cfg.Collection == "" {
-		cfg.Collection = Collection
+	} else {
+		// New two-level format: satellite + product
+		sat := ResolveSatelliteType(cfg.Satellite, cfg.Product)
+		if sat != "" {
+			cfg.Satellite = string(sat)
+		}
 	}
 	return &cfg, nil
 }
 
-func ensureDefaultConfig(path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	}
+func defaultConfigJSON() ([]byte, error) {
 	now := time.Now()
 	defaultCfg := Config{
 		BBox:       []float64{116.2, 39.8, 116.6, 40.0},
@@ -121,7 +154,18 @@ func ensureDefaultConfig(path string) error {
 		MaxWorkers: 4,
 		MaxRetries: 3,
 	}
-	data, err := json.MarshalIndent(defaultCfg, "", "  ")
+	return json.MarshalIndent(defaultCfg, "", "  ")
+}
+
+func ensureDefaultConfig(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	return WriteDefaultConfig(path)
+}
+
+func WriteDefaultConfig(path string) error {
+	data, err := defaultConfigJSON()
 	if err != nil {
 		return fmt.Errorf("marshal default config: %w", err)
 	}
@@ -137,24 +181,11 @@ func mergeSettings(cfg *Config) {
 	if err != nil || s == nil {
 		return
 	}
-	if cfg.STACURL == "" || cfg.STACURL == EarthSearchURL {
-		if s.STACURL != "" {
-			cfg.STACURL = s.STACURL
-		}
-	}
-	if cfg.Collection == "" || cfg.Collection == Collection {
-		if s.Collection != "" {
-			cfg.Collection = s.Collection
-		}
-	}
-	if cfg.Satellite == "" || cfg.Satellite == string(SatS2L2A) {
-		if s.Satellite != "" {
-			cfg.Satellite = s.Satellite
-		}
-	}
+	// Only merge authentication credentials from settings.
 	if cfg.Auth == nil || cfg.Auth.Username == "" {
-		if s.Auth != nil && s.Auth.Username != "" {
-			cfg.Auth = s.Auth
+		auth := getSettingsAuth(s)
+		if auth != nil {
+			cfg.Auth = auth
 		}
 	}
 }

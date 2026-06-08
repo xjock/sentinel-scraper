@@ -404,6 +404,9 @@ func TestParseSatelliteType(t *testing.T) {
 		{"sentinel1_slc", SatS1SLC},
 		{"SENTINEL1_SLC", SatS1SLC},
 		{"", SatS2L2A},
+		{"hls", SatHLS},
+		{"HLSS30.v2.0", SatHLS},
+		{"HLSL30.v2.0", SatHLS},
 		{"unknown", SatS2L2A},
 	}
 	for _, tt := range tests {

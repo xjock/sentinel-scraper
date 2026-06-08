@@ -26,17 +26,41 @@ func readLine(prompt string) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-// hasSavedAuth 判断已有 settings 中是否保存了完整的用户名/密码。
-func hasSavedAuth(s *Settings) bool {
-	return s != nil && s.Auth != nil && s.Auth.Username != "" && s.Auth.Password != ""
+// getSettingsAuth returns the correct AuthConfig for the current source.
+// It checks per-source fields first, then falls back to the legacy Auth field.
+func getSettingsAuth(s *Settings) *AuthConfig {
+	if s == nil {
+		return nil
+	}
+	if s.CDSEAuth != nil && s.CDSEAuth.Username != "" {
+		return s.CDSEAuth
+	}
+	if s.EarthdataAuth != nil && s.EarthdataAuth.Username != "" {
+		return s.EarthdataAuth
+	}
+	return nil
 }
 
-// promptCredentials 询问用户名和密码。如果 existing 已有完整凭据，允许直接回车
+// hasSavedAuth 判断已有 settings 中是否保存了任一完整凭据。
+func hasSavedAuth(s *Settings) bool {
+	if s == nil {
+		return false
+	}
+	if s.CDSEAuth != nil && s.CDSEAuth.Username != "" && s.CDSEAuth.Password != "" {
+		return true
+	}
+	if s.EarthdataAuth != nil && s.EarthdataAuth.Username != "" && s.EarthdataAuth.Password != "" {
+		return true
+	}
+	return false
+}
+
+// promptCredentials 询问用户名和密码。如果 existingAuth 已有完整凭据，允许直接回车
 // 跳过两个输入以保持原值不变；否则强制输入两项非空。
-func promptCredentials(existing *Settings) (string, string, error) {
-	saved := hasSavedAuth(existing)
+func promptCredentials(existingAuth *AuthConfig) (string, string, error) {
+	saved := existingAuth != nil && existingAuth.Username != "" && existingAuth.Password != ""
 	if saved {
-		fmt.Printf("已保存凭据：%s（直接回车保持不变）\n", existing.Auth.Username)
+		fmt.Printf("已保存凭据：%s（直接回车保持不变）\n", existingAuth.Username)
 	}
 	username, err := readLine("邮箱（用户名）: ")
 	if err != nil {
@@ -48,7 +72,7 @@ func promptCredentials(existing *Settings) (string, string, error) {
 	}
 	if username == "" && password == "" {
 		if saved {
-			return existing.Auth.Username, existing.Auth.Password, nil
+			return existingAuth.Username, existingAuth.Password, nil
 		}
 		return "", "", fmt.Errorf("用户名和密码不能为空")
 	}
@@ -63,8 +87,9 @@ func promptSatellite() (SatelliteType, error) {
 	fmt.Println("  1) Sentinel-2 L2A（多光谱，支持云量过滤和 RGB 合成）")
 	fmt.Println("  2) Sentinel-1 GRD（SAR 雷达，不受云影响，VV/VH 极化）")
 	fmt.Println("  3) Sentinel-1 SLC（SAR 雷达，不受云影响，VV/VH 极化）")
+	fmt.Println("  4) HLS（NASA 融合数据，30m，支持 RGB 合成）")
 	fmt.Println()
-	satChoice, err := readLine("选择 [1-3]: ")
+	satChoice, err := readLine("选择 [1-4]: ")
 	if err != nil {
 		return "", err
 	}
@@ -73,6 +98,8 @@ func promptSatellite() (SatelliteType, error) {
 		return SatS1GRD, nil
 	case "3":
 		return SatS1SLC, nil
+	case "4":
+		return SatHLS, nil
 	default:
 		return SatS2L2A, nil
 	}
@@ -83,144 +110,76 @@ func setupAuthWizard() error {
 
 	fmt.Println("=== sentinel-scraper 认证配置 ===")
 	fmt.Println()
-	fmt.Println("选择数据源:")
-	fmt.Println("  1) Earth Search — 无需认证，需翻墙")
-	fmt.Println("  2) CDSE STAC API — 按波段下载，需翻墙")
-	fmt.Println("  3) CDSE OData API — 整景 ZIP 下载，无需翻墙")
-	fmt.Println("  4) 自定义 STAC API")
+	fmt.Println("配置认证信息后，程序会根据你要下载的数据自动选择最佳来源。")
 	fmt.Println()
 
-	choice, err := readLine("选择 [1-4]: ")
+	settings := &Settings{}
+	if existing != nil {
+		settings.CDSEAuth = existing.CDSEAuth
+		settings.EarthdataAuth = existing.EarthdataAuth
+	}
+
+	// CDSE
+	fmt.Println("--- CDSE (Copernicus Data Space) ---")
+	fmt.Println("用于 S2/S1 的 CDSE STAC 和 CDSE OData 下载。")
+	fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
+	fmt.Println()
+	var existingCDSE *AuthConfig
+	if existing != nil {
+		existingCDSE = existing.CDSEAuth
+	}
+	username, password, err := promptCredentials(existingCDSE)
 	if err != nil {
 		return err
 	}
-
-	switch choice {
-	case "1":
-		sat, err := promptSatellite()
-		if err != nil {
-			return err
-		}
-		sc := satelliteConfigs[sat]
-		settings := &Settings{
-			Source:     "earth_search",
-			STACURL:    EarthSearchURL,
-			Collection: sc.Collection,
-			Satellite:  string(sat),
-		}
-		if err := saveSettings(settings); err != nil {
-			return fmt.Errorf("保存配置失败: %w", err)
-		}
-		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
-		fmt.Println("Earth Search 为默认数据源，无需认证。")
-
-	case "2":
-		sat, err := promptSatellite()
-		if err != nil {
-			return err
-		}
-		sc := satelliteConfigs[sat]
-		fmt.Println("\n--- CDSE STAC 配置 ---")
-		if sat == SatS2L2A {
-			fmt.Println("按波段下载（red/green/blue/nir 等），支持断点续传和 RGB 合成。")
-		} else {
-			fmt.Println("按极化下载（vv/vh 等），SAR 数据不受云影响。")
-		}
-		fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
-		fmt.Println()
-		username, password, err := promptCredentials(existing)
-		if err != nil {
-			return err
-		}
-		settings := &Settings{
-			Source:     "cdse",
-			STACURL:    "https://stac.dataspace.copernicus.eu/v1",
-			Collection: sc.CDSECollection,
-			Satellite:  string(sat),
-			Auth:       &AuthConfig{Username: username, Password: password},
-		}
-		if err := saveSettings(settings); err != nil {
-			return fmt.Errorf("保存配置失败: %w", err)
-		}
-		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
-		fmt.Println("文件权限: 0600（仅所有者可读写）")
-
-	case "3":
-		sat, err := promptSatellite()
-		if err != nil {
-			return err
-		}
-		fmt.Println("\n--- CDSE OData 配置 ---")
-		if sat == SatS2L2A {
-			fmt.Println("整景 ZIP 下载（包含所有波段和元数据），适合需要完整产品的场景。")
-		} else {
-			fmt.Println("整景 ZIP 下载（SAR 原始数据），不受云影响。")
-		}
-		fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
-		fmt.Println()
-		username, password, err := promptCredentials(existing)
-		if err != nil {
-			return err
-		}
-		settings := &Settings{
-			Source:    "cdse_odata",
-			Satellite: string(sat),
-			Auth:      &AuthConfig{Username: username, Password: password},
-		}
-		if err := saveSettings(settings); err != nil {
-			return fmt.Errorf("保存配置失败: %w", err)
-		}
-		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
-		fmt.Println("文件权限: 0600（仅所有者可读写）")
-
-	case "4":
-		fmt.Println("\n--- 自定义 STAC API 配置 ---")
-		stacURL, err := readLine("STAC API 地址: ")
-		if err != nil {
-			return err
-		}
-		collection, err := readLine("Collection 名称: ")
-		if err != nil {
-			return err
-		}
-		if stacURL == "" || collection == "" {
-			return fmt.Errorf("地址和名称不能为空")
-		}
-		sat := ParseSatelliteType(collection)
-		settings := &Settings{
-			Source:     "custom",
-			STACURL:    stacURL,
-			Collection: collection,
-			Satellite:  string(sat),
-		}
-		if err := saveSettings(settings); err != nil {
-			return fmt.Errorf("保存配置失败: %w", err)
-		}
-		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
-		fmt.Println("文件权限: 0600（仅所有者可读写）")
-
-	default:
-		return fmt.Errorf("无效选择，请重新运行并选择 1、2、3 或 4")
+	if username != "" && password != "" {
+		settings.CDSEAuth = &AuthConfig{Username: username, Password: password}
 	}
+
+	// Earthdata
+	fmt.Println()
+	fmt.Println("--- Earthdata (NASA) ---")
+	fmt.Println("用于 S1 的 ASF 下载和 HLS 数据下载。")
+	fmt.Println("访问 https://urs.earthdata.nasa.gov 注册账号。")
+	fmt.Println()
+	var existingEarthdata *AuthConfig
+	if existing != nil {
+		existingEarthdata = existing.EarthdataAuth
+	}
+	username, password, err = promptCredentials(existingEarthdata)
+	if err != nil {
+		return err
+	}
+	if username != "" && password != "" {
+		settings.EarthdataAuth = &AuthConfig{Username: username, Password: password}
+	}
+
+	if err := saveSettings(settings); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+	fmt.Printf("\n配置已保存到: %s\n", settingsPath())
+	fmt.Println("文件权限: 0600（仅所有者可读写）")
 	return nil
 }
 
 // ---------- Settings & Web-based Setup ----------
 
 func settingsPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
+	home := os.Getenv("HOME")
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			home = "."
+		}
 	}
 	return filepath.Join(home, ".sentinel-scraper", "settings.json")
 }
 
 type Settings struct {
-	Source     string      `json:"source"`
-	Satellite  string      `json:"satellite,omitempty"`
-	STACURL    string      `json:"stac_url,omitempty"`
-	Collection string      `json:"collection,omitempty"`
-	Auth       *AuthConfig `json:"auth,omitempty"`
+	CDSEAuth      *AuthConfig `json:"cdse_auth,omitempty"`      // CDSE-only credentials
+	EarthdataAuth *AuthConfig `json:"earthdata_auth,omitempty"` // Earthdata-only credentials
+	Auth          *AuthConfig `json:"auth,omitempty"`           // Legacy field, migrated to cdse_auth on load
 }
 
 func loadSettings() (*Settings, error) {
@@ -230,11 +189,15 @@ func loadSettings() (*Settings, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read settings: %w", err)
 	}
 	var s Settings
 	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse settings: %w", err)
+	}
+	// Migrate legacy auth field to cdse_auth so old credentials aren't lost.
+	if s.Auth != nil && s.Auth.Username != "" && (s.CDSEAuth == nil || s.CDSEAuth.Username == "") {
+		s.CDSEAuth = s.Auth
 	}
 	return &s, nil
 }
@@ -245,7 +208,15 @@ func saveSettings(s *Settings) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	// Persist only the new per-source fields; legacy auth is dropped.
+	type settingsSave struct {
+		CDSEAuth      *AuthConfig `json:"cdse_auth,omitempty"`
+		EarthdataAuth *AuthConfig `json:"earthdata_auth,omitempty"`
+	}
+	data, err := json.MarshalIndent(settingsSave{
+		CDSEAuth:      s.CDSEAuth,
+		EarthdataAuth: s.EarthdataAuth,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -279,7 +250,7 @@ const setupHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>sentinel-scraper Setup</title>
+<title>sentinel-scraper 认证配置</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -308,7 +279,7 @@ const setupHTML = `<!DOCTYPE html>
     color: #444;
     margin-bottom: 6px;
   }
-  input[type="text"], input[type="password"], select {
+  input[type="text"], input[type="password"] {
     width: 100%;
     padding: 10px 12px;
     border: 1px solid #d1d5db;
@@ -316,7 +287,7 @@ const setupHTML = `<!DOCTYPE html>
     font-size: 14px;
     background: #fafbfc;
   }
-  input:focus, select:focus {
+  input:focus {
     outline: none;
     border-color: #3b82f6;
     background: #fff;
@@ -326,12 +297,12 @@ const setupHTML = `<!DOCTYPE html>
     color: #888;
     margin-top: 4px;
   }
-  .hidden { display: none; }
   .panel {
     border-left: 4px solid #3b82f6;
     padding: 16px;
     background: #f8fafc;
     border-radius: 0 8px 8px 0;
+    margin-bottom: 20px;
   }
   .panel h3 { margin: 0 0 12px; font-size: 15px; color: #1e3a5f; }
   .steps { margin-bottom: 16px; }
@@ -350,77 +321,50 @@ const setupHTML = `<!DOCTYPE html>
     margin-top: 8px;
   }
   button:hover { background: #2563eb; }
-  .earth { border-left: 4px solid #10b981; padding-left: 12px; background: #f0fdf4; border-radius: 0 8px 8px 0; }
-  .cdse { border-left: 4px solid #3b82f6; padding-left: 12px; background: #eff6ff; border-radius: 0 8px 8px 0; }
-  .custom { border-left: 4px solid #f59e0b; padding-left: 12px; background: #fffbeb; border-radius: 0 8px 8px 0; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>sentinel-scraper 数据源配置</h1>
-  <p class="desc">选择数据源、卫星类型和认证方式。</p>
+  <h1>sentinel-scraper 认证配置</h1>
+  <p class="desc">填写认证信息后，程序会根据你要下载的数据自动选择最佳来源。来源和数据类型在 config.json 中配置。</p>
   <form method="POST" action="/">
-    <div class="field">
-      <label for="source">数据源</label>
-      <select id="source" name="source" onchange="onSourceChange()">
-        <option value="cdse_odata">CDSE OData API（整景 ZIP 下载，无需翻墙）</option>
-        <option value="cdse">CDSE STAC API（按波段下载，需翻墙）</option>
-        <option value="earth_search">Earth Search STAC API（无需认证，需翻墙）</option>
-        <option value="custom">自定义 STAC API</option>
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="satellite">卫星数据类型</label>
-      <select id="satellite" name="satellite">
-        <option value="sentinel-2-l2a">Sentinel-2 L2A（多光谱，云量过滤 + RGB）</option>
-        <option value="sentinel-1-grd">Sentinel-1 GRD（SAR 雷达，VV/VH 极化）</option>
-        <option value="sentinel-1-slc">Sentinel-1 SLC（SAR 雷达，VV/VH 极化）</option>
-      </select>
-    </div>
-
-    <div id="cdse-box" class="hidden">
-      <div class="panel cdse">
-        <h3>CDSE 账号设置</h3>
-        <div class="steps">
-          <p><strong>第 1 步：</strong>前往 <a href="https://dataspace.copernicus.eu/" target="_blank">dataspace.copernicus.eu</a> 注册账号，点击右上角用户图标 → REGISTER，填写信息后查收验证邮件完成验证。</p>
-          <p><strong>第 2 步：</strong>在下方填写 CDSE 登录邮箱和密码。</p>
-        </div>
-
-        <div class="field">
-          <label>邮箱（用户名）</label>
-          <input type="text" name="cdse_username" placeholder="{{if .HasExistingAuth}}留空保持不变（{{.ExistingUsername}}）{{else}}your@email.com{{end}}">
-        </div>
-        <div class="field">
-          <label>密码</label>
-          <input type="password" name="cdse_password" placeholder="{{if .HasExistingAuth}}留空保持不变{{else}}CDSE 登录密码{{end}}">
-        </div>
-        {{if .HasExistingAuth}}<p class="hint">已保存凭据：{{.ExistingUsername}}（两个输入框留空回车即可保持不变，只切换数据源）。</p>{{else}}<p class="hint">使用 CDSE 登录邮箱和密码，密码保存在本地。</p>{{end}}
-      </div>
-    </div>
-
-    <div id="custom-box" class="field custom hidden">
-      <div class="field">
-        <label>STAC API 地址</label>
-        <input type="text" name="stac_url" placeholder="https://example.com/stac">
+    <div class="panel">
+      <h3>CDSE (Copernicus Data Space)</h3>
+      <div class="steps">
+        <p>用于 Sentinel-2/Sentinel-1 的 CDSE STAC 和 CDSE OData 下载。</p>
+        <p>访问 <a href="https://dataspace.copernicus.eu/" target="_blank">dataspace.copernicus.eu</a> 注册账号。</p>
       </div>
       <div class="field">
-        <label>Collection 名称</label>
-        <input type="text" name="collection" placeholder="SENTINEL-2">
+        <label>邮箱（用户名）</label>
+        <input type="text" name="cdse_username" placeholder="{{if .HasExistingCDSEAuth}}留空保持不变（{{.ExistingCDSEUsername}}）{{else}}your@email.com{{end}}">
       </div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password" name="cdse_password" placeholder="{{if .HasExistingCDSEAuth}}留空保持不变{{else}}CDSE 登录密码{{end}}">
+      </div>
+      {{if .HasExistingCDSEAuth}}<p class="hint">已保存 CDSE 凭据：{{.ExistingCDSEUsername}}（留空保持不变）。</p>{{else}}<p class="hint">使用 CDSE 登录邮箱和密码，密码保存在本地。</p>{{end}}
     </div>
 
-    <button type="submit">保存并继续</button>
+    <div class="panel" style="border-left-color: #e11d48; background: #fff1f2;">
+      <h3 style="color: #be123c;">Earthdata (NASA)</h3>
+      <div class="steps">
+        <p>用于 Sentinel-1 的 ASF 下载和 HLS 数据下载。</p>
+        <p>访问 <a href="https://urs.earthdata.nasa.gov/" target="_blank">urs.earthdata.nasa.gov</a> 注册账号。</p>
+      </div>
+      <div class="field">
+        <label>用户名</label>
+        <input type="text" name="earthdata_username" placeholder="{{if .HasExistingEarthdataAuth}}留空保持不变（{{.ExistingEarthdataUsername}}）{{else}}your_username{{end}}">
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password" name="earthdata_password" placeholder="{{if .HasExistingEarthdataAuth}}留空保持不变{{else}}Earthdata 密码{{end}}">
+      </div>
+      {{if .HasExistingEarthdataAuth}}<p class="hint">已保存 Earthdata 凭据：{{.ExistingEarthdataUsername}}（留空保持不变）。</p>{{else}}<p class="hint">使用 Earthdata 登录用户名和密码，密码保存在本地。</p>{{end}}
+    </div>
+
+    <button type="submit">保存</button>
   </form>
 </div>
-<script>
-function onSourceChange() {
-  const v = document.getElementById('source').value;
-  document.getElementById('cdse-box').classList.toggle('hidden', v !== 'cdse' && v !== 'cdse_odata');
-  document.getElementById('custom-box').classList.toggle('hidden', v !== 'custom');
-}
-onSourceChange();
-</script>
 </body>
 </html>`
 
@@ -443,30 +387,18 @@ const successHTML = `<!DOCTYPE html>
 </html>`
 
 type setupPageData struct {
-	HasExistingAuth  bool
-	ExistingUsername string
+	HasExistingCDSEAuth       bool
+	ExistingCDSEUsername      string
+	HasExistingEarthdataAuth  bool
+	ExistingEarthdataUsername string
 }
 
 var setupTmpl = template.Must(template.New("setup").Parse(setupHTML))
 
 func runSetupWizard() (*Settings, error) {
 	existing, _ := loadSettings()
-	saved := hasSavedAuth(existing)
-
-	resolveAuth := func(r *http.Request) (*AuthConfig, error) {
-		user := strings.TrimSpace(r.FormValue("cdse_username"))
-		pass := strings.TrimSpace(r.FormValue("cdse_password"))
-		if user == "" && pass == "" {
-			if saved {
-				return &AuthConfig{Username: existing.Auth.Username, Password: existing.Auth.Password}, nil
-			}
-			return nil, fmt.Errorf("用户名和密码不能为空")
-		}
-		if user == "" || pass == "" {
-			return nil, fmt.Errorf("用户名和密码必须同时提供")
-		}
-		return &AuthConfig{Username: user, Password: pass}, nil
-	}
+	cdseSaved := existing != nil && existing.CDSEAuth != nil && existing.CDSEAuth.Username != ""
+	earthdataSaved := existing != nil && existing.EarthdataAuth != nil && existing.EarthdataAuth.Username != ""
 
 	done := make(chan *Settings, 1)
 
@@ -478,43 +410,22 @@ func runSetupWizard() (*Settings, error) {
 				return
 			}
 
-			source := r.FormValue("source")
-			sat := r.FormValue("satellite")
-			if sat == "" {
-				sat = string(SatS2L2A)
+			settings := &Settings{}
+			if existing != nil {
+				settings.CDSEAuth = existing.CDSEAuth
+				settings.EarthdataAuth = existing.EarthdataAuth
 			}
-			sc := satelliteConfigs[SatelliteType(sat)]
-			settings := &Settings{Source: source, Satellite: sat}
 
-			switch source {
-			case "earth_search":
-				settings.STACURL = EarthSearchURL
-				settings.Collection = sc.Collection
-			case "cdse":
-				settings.STACURL = "https://stac.dataspace.copernicus.eu/v1"
-				settings.Collection = sc.CDSECollection
-				auth, err := resolveAuth(r)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				settings.Auth = auth
-			case "cdse_odata":
-				auth, err := resolveAuth(r)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				settings.Auth = auth
-			case "custom":
-				settings.STACURL = strings.TrimSpace(r.FormValue("stac_url"))
-				settings.Collection = strings.TrimSpace(r.FormValue("collection"))
-				if settings.Collection != "" {
-					settings.Satellite = string(ParseSatelliteType(settings.Collection))
-				}
-			default:
-				http.Error(w, "Invalid source", http.StatusBadRequest)
-				return
+			user := strings.TrimSpace(r.FormValue("cdse_username"))
+			pass := strings.TrimSpace(r.FormValue("cdse_password"))
+			if user != "" && pass != "" {
+				settings.CDSEAuth = &AuthConfig{Username: user, Password: pass}
+			}
+
+			user = strings.TrimSpace(r.FormValue("earthdata_username"))
+			pass = strings.TrimSpace(r.FormValue("earthdata_password"))
+			if user != "" && pass != "" {
+				settings.EarthdataAuth = &AuthConfig{Username: user, Password: pass}
 			}
 
 			if err := saveSettings(settings); err != nil {
@@ -531,9 +442,15 @@ func runSetupWizard() (*Settings, error) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		data := setupPageData{HasExistingAuth: saved}
-		if saved {
-			data.ExistingUsername = existing.Auth.Username
+		data := setupPageData{
+			HasExistingCDSEAuth:      cdseSaved,
+			HasExistingEarthdataAuth: earthdataSaved,
+		}
+		if cdseSaved {
+			data.ExistingCDSEUsername = existing.CDSEAuth.Username
+		}
+		if earthdataSaved {
+			data.ExistingEarthdataUsername = existing.EarthdataAuth.Username
 		}
 		if err := setupTmpl.Execute(w, data); err != nil {
 			http.Error(w, "render failed", http.StatusInternalServerError)
