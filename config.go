@@ -62,17 +62,17 @@ func ResolveSatelliteType(satellite, product string) SatelliteType {
 }
 
 type Config struct {
-	BBox       []float64   `json:"bbox"`
-	StartDate  string      `json:"start_date"`
-	EndDate    string      `json:"end_date"`
-	MinCloud   float64     `json:"min_cloud"`
-	MaxCloud   float64     `json:"max_cloud"`
-	Bands      []string    `json:"bands"`
-	Limit      int         `json:"limit"`
-	MaxWorkers int         `json:"max_workers"`
-	MaxRetries int         `json:"max_retries"`
-	Satellite  string      `json:"satellite,omitempty"`  // sentinel-1, sentinel-2, s1, s2, hls
-	Product    string      `json:"product,omitempty"`    // grd, slc (仅 sentinel-1)
+	BBox       []float64 `json:"bbox"`
+	StartDate  string    `json:"start_date"`
+	EndDate    string    `json:"end_date"`
+	MinCloud   float64   `json:"min_cloud"`
+	MaxCloud   float64   `json:"max_cloud"`
+	Bands      []string  `json:"bands"`
+	Limit      int       `json:"limit"`
+	MaxWorkers int       `json:"max_workers"`
+	MaxRetries int       `json:"max_retries"`
+	Satellite  string    `json:"satellite,omitempty"` // sentinel-1, sentinel-2, s1, s2, hls
+	Product    string    `json:"product,omitempty"`   // grd, slc (仅 sentinel-1)
 
 	// Internal fields, populated by mergeSettings or runWithFallback.
 	Auth       *AuthConfig

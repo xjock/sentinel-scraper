@@ -24,69 +24,93 @@ func main() {
 	// Each usage string includes: purpose, type, default, required? yes/no, example.
 	configPath := flag.String("config", "config.json",
 		"Path to the search-configuration JSON file.\n"+
-		"  Type:     string (file path)\n"+
-		"  Default:  config.json\n"+
-		"  Required: no (auto-created with sensible defaults if missing)\n"+
-		"  Example:  -config config.json\n\n"+
-		"  Config file fields (JSON):\n"+
-		"    bbox        [float×4]  Bounding box [west, south, east, north] in degrees.\n"+
-		"                         Example: [116.2, 39.8, 116.6, 40.0]\n"+
-		"    start_date  string    Search start date in YYYY-MM-DD format.\n"+
-		"                         Example: \"2024-01-01\"\n"+
-		"    end_date    string    Search end date in YYYY-MM-DD format.\n"+
-		"                         Example: \"2024-01-31\"\n"+
-		"    min_cloud   float     Minimum cloud cover percentage (0–100). Only for optical.\n"+
-		"                         Default: 0\n"+
-		"    max_cloud   float     Maximum cloud cover percentage (0–100). Only for optical.\n"+
-		"                         Default: 100 (no filter)\n"+
-		"    bands       []string  Band keys to download.\n"+
-		"                         S2 defaults: [\"red\", \"green\", \"blue\"]\n"+
-		"                         S1 defaults: [\"vv\", \"vh\"]\n"+
-		"                         HLS defaults: [\"red\", \"green\", \"blue\"]\n"+
-		"    limit       int       Maximum number of STAC items to return.\n"+
-		"                         Default: 20\n"+
-		"    max_workers int       Number of concurrent download workers.\n"+
-		"                         Default: 4\n"+
-		"    max_retries int       Number of retry attempts for each failed download.\n"+
-		"                         Default: 3\n"+
-		"    satellite   string    Satellite mission. Values: \"sentinel-2\", \"sentinel-1\", \"s2\", \"s1\", \"hls\"\n"+
-		"                         Default: \"sentinel-2\"\n"+
-		"    product     string    Sentinel-1 product type. Values: \"grd\" | \"slc\"\n"+
-		"                         Only used when satellite=\"sentinel-1\". Default: \"grd\"")
+			"  Type:     string (file path)\n"+
+			"  Default:  config.json\n"+
+			"  Required: no (auto-created with sensible defaults if missing)\n"+
+			"  Example:  -config config.json\n\n"+
+			"  Config file fields (JSON):\n"+
+			"    bbox        [float×4]  Bounding box [west, south, east, north] in degrees.\n"+
+			"                         Example: [116.2, 39.8, 116.6, 40.0]\n"+
+			"    start_date  string    Search start date in YYYY-MM-DD format.\n"+
+			"                         Example: \"2024-01-01\"\n"+
+			"    end_date    string    Search end date in YYYY-MM-DD format.\n"+
+			"                         Example: \"2024-01-31\"\n"+
+			"    min_cloud   float     Minimum cloud cover percentage (0–100). Only for optical.\n"+
+			"                         Default: 0\n"+
+			"    max_cloud   float     Maximum cloud cover percentage (0–100). Only for optical.\n"+
+			"                         Default: 100 (no filter)\n"+
+			"    bands       []string  Band keys to download.\n"+
+			"                         S2 defaults: [\"red\", \"green\", \"blue\"]\n"+
+			"                         S1 defaults: [\"vv\", \"vh\"]\n"+
+			"                         HLS defaults: [\"red\", \"green\", \"blue\"]\n"+
+			"    limit       int       Maximum number of STAC items to return.\n"+
+			"                         Default: 20\n"+
+			"    max_workers int       Number of concurrent download workers.\n"+
+			"                         Default: 4\n"+
+			"    max_retries int       Number of retry attempts for each failed download.\n"+
+			"                         Default: 3\n"+
+			"    satellite   string    Satellite mission. Values: \"sentinel-2\", \"sentinel-1\", \"s2\", \"s1\", \"hls\"\n"+
+			"                         Default: \"sentinel-2\"\n"+
+			"    product     string    Sentinel-1 product type. Values: \"grd\" | \"slc\"\n"+
+			"                         Only used when satellite=\"sentinel-1\". Default: \"grd\"")
 	destDir := flag.String("dest", "./sentinel_data",
 		"Output directory where downloaded imagery bands and KML files are stored.\n"+
-		"  Type:    string (directory path)\n"+
-		"  Default: ./sentinel_data\n"+
-		"  Required: no\n"+
-		"  Example: -dest ./sentinel_data")
+			"  Type:    string (directory path)\n"+
+			"  Default: ./sentinel_data\n"+
+			"  Required: no\n"+
+			"  Example: -dest ./sentinel_data")
 	setupAuth := flag.Bool("setup-auth", false,
 		"Launch an interactive CLI wizard to configure authentication credentials.\n"+
-		"  Type:    boolean flag (no value needed)\n"+
-		"  Default: false\n"+
-		"  Required: no\n"+
-		"  Scope:   Prompts for CDSE (Copernicus) and Earthdata (NASA) username/password,\n"+
-		"           then writes them to ~/.sentinel-scraper/settings.json\n"+
-		"  Example: -setup-auth")
+			"  Type:    boolean flag (no value needed)\n"+
+			"  Default: false\n"+
+			"  Required: no\n"+
+			"  Scope:   Prompts for CDSE (Copernicus) and Earthdata (NASA) username/password,\n"+
+			"           then writes them to ~/.sentinel-scraper/settings.json\n"+
+			"  Example: -setup-auth")
 	setupFlag := flag.Bool("setup", false,
 		"Open a web-based setup wizard in the default browser for GUI configuration.\n"+
-		"  Type:    boolean flag (no value needed)\n"+
-		"  Default: false\n"+
-		"  Required: no\n"+
-		"  Scope:   Same as -setup-auth but via a local HTTP page instead of CLI prompts.\n"+
-		"  Example: -setup")
+			"  Type:    boolean flag (no value needed)\n"+
+			"  Default: false\n"+
+			"  Required: no\n"+
+			"  Scope:   Same as -setup-auth but via a local HTTP page instead of CLI prompts.\n"+
+			"  Example: -setup")
 	versionFlag := flag.Bool("version", false,
 		"Print the sentinel-scraper version and exit immediately.\n"+
-		"  Type:    boolean flag (no value needed)\n"+
-		"  Default: false\n"+
-		"  Required: no\n"+
-		"  Example: -version")
+			"  Type:    boolean flag (no value needed)\n"+
+			"  Default: false\n"+
+			"  Required: no\n"+
+			"  Example: -version")
 	defaultFlag := flag.Bool("default", false,
 		"Generate a default config.json and exit immediately.\n"+
-		"  Type:    boolean flag (no value needed)\n"+
-		"  Default: false\n"+
-		"  Required: no\n"+
-		"  Scope:   Writes a default configuration file to the path specified by -config.\n"+
-		"  Example: -default")
+			"  Type:    boolean flag (no value needed)\n"+
+			"  Default: false\n"+
+			"  Required: no\n"+
+			"  Scope:   Writes a default configuration file to the path specified by -config.\n"+
+			"  Example: -default")
+	orbitDownload := flag.Bool("orbit-download", false,
+		"Download Sentinel-1 precise orbit files (POEORB/RESORB EOF) for .SAFE/.zip scenes.\n"+
+			"  Type:     boolean flag (no value needed)\n"+
+			"  Default:  false\n"+
+			"  Required:  no\n"+
+			"  Example:  -orbit-download -safe-dir ./SLC -orbit-dir ./orbits")
+	safeDir := flag.String("safe-dir", "",
+		"Directory containing .SAFE folders or .zip files for orbit matching.\n"+
+			"  Used with -orbit-download.\n"+
+			"  Type:     string (directory path)\n"+
+			"  Required:  yes (when -orbit-download is set)\n"+
+			"  Example:  -safe-dir ./SLC")
+	orbitDir := flag.String("orbit-dir", "",
+		"Output directory for downloaded orbit EOF files.\n"+
+			"  Used with -orbit-download. Defaults to <safe-dir>/orbits.\n"+
+			"  Type:     string (directory path)\n"+
+			"  Required:  no\n"+
+			"  Example:  -orbit-dir ./orbits")
+	forceResorb := flag.Bool("resorb", false,
+		"Force RESORB (restituted) orbits instead of auto-selecting POEORB/RESORB.\n"+
+			"  Used with -orbit-download.\n"+
+			"  Type:     boolean flag (no value needed)\n"+
+			"  Default:  false\n"+
+			"  Required:  no")
 	flag.Parse()
 
 	if len(os.Args) == 1 {
@@ -144,6 +168,43 @@ func main() {
 		os.Exit(1)
 	}
 	mergeSettings(cfg)
+
+	if *orbitDownload {
+		if *safeDir == "" {
+			fmt.Fprintln(os.Stderr, "-safe-dir is required for orbit download")
+			os.Exit(1)
+		}
+		orbitOutput := *orbitDir
+		if orbitOutput == "" {
+			orbitOutput = filepath.Join(*safeDir, "orbits")
+		}
+		maxWorkers := 4
+		maxRetries := 3
+		if cfg != nil {
+			if cfg.MaxWorkers > 0 {
+				maxWorkers = cfg.MaxWorkers
+			}
+			if cfg.MaxRetries >= 0 {
+				maxRetries = cfg.MaxRetries
+			}
+		}
+		settings, _ := loadSettings()
+		if settings == nil || settings.EarthdataAuth == nil || settings.EarthdataAuth.Username == "" {
+			fmt.Fprintln(os.Stderr, "Earthdata credentials not configured. Run -setup-auth first.")
+			os.Exit(1)
+		}
+		auth := NewEarthdataAuth(settings.EarthdataAuth.Username, settings.EarthdataAuth.Password)
+
+		fmt.Println("=== Sentinel-1 Orbit Download ===")
+		fmt.Printf("SAFE dir: %s\n", *safeDir)
+		fmt.Printf("Orbit dir: %s\n", orbitOutput)
+
+		if err := runOrbitDownload(*safeDir, orbitOutput, auth, maxWorkers, maxRetries, *forceResorb); err != nil {
+			fmt.Fprintf(os.Stderr, "Orbit download failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// 来源完全由程序根据卫星类型和可用认证自动编排
 	runWithFallback(cfg, *destDir, *configPath)
