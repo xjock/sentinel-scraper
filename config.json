@@ -1,0 +1,23 @@
+{
+  "bbox": [
+    116.2,
+    39.8,
+    116.6,
+    40
+  ],
+  "start_date": "2026-05-09",
+  "end_date": "2026-06-08",
+  "min_cloud": 0,
+  "max_cloud": 0,
+  "bands": [
+    "red",
+    "green",
+    "blue"
+  ],
+  "limit": 20,
+  "max_workers": 4,
+  "max_retries": 3,
+  "Auth": null,
+  "STACURL": "",
+  "Collection": ""
+}

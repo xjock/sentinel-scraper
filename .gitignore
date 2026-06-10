@@ -43,6 +43,9 @@ dist/*
 !dist/config.json
 *.tar.gz
 
+# Test coverage
+coverage.out
+
 # Secret
 settings.json
 PRIVATE.md
