@@ -321,28 +321,34 @@ func runSTACFlow(cfg *Config, auth Authenticator, destDir, configPath string) er
 	}()
 
 	fmt.Println("\n=== Downloading Bands ===")
-	total := 0
-	for _, item := range items {
-		fmt.Printf("\nItem: %s\n", item.ID)
-		if _, err := SaveKML(item, destDir); err != nil {
-			fmt.Fprintf(os.Stderr, "  [kml skip] %s: %v\n", item.ID, err)
-		}
-		for _, band := range cfg.Bands {
-			assetKey := resolveAssetKey(band, cfg.STACURL, sat)
-			asset, ok := item.Assets[assetKey]
-			if !ok {
-				fmt.Printf("  [warn] band '%s' not available (tried '%s')\n", band, assetKey)
-				continue
+	// 生产者放入独立 goroutine：必须边生产 tasks 边由主协程消费 results。
+	// 否则当任务数 > (len(tasks)+len(results)) 缓冲容量时，results 填满使 worker
+	// 阻塞在发送、不再消费 tasks，tasks 也填满使本循环阻塞在发送，主协程永远
+	// 到不了下面的 `range results` 消费端 —— 多 item 下载时必然死锁。
+	go func() {
+		for _, item := range items {
+			fmt.Printf("\nItem: %s\n", item.ID)
+			if _, err := SaveKML(item, destDir); err != nil {
+				fmt.Fprintf(os.Stderr, "  [kml skip] %s: %v\n", item.ID, err)
 			}
-			tasks <- downloadTask{itemID: item.ID, band: band, asset: asset, destDir: destDir, maxRetries: cfg.MaxRetries, auth: auth}
-			total++
+			for _, band := range cfg.Bands {
+				assetKey := resolveAssetKey(band, cfg.STACURL, sat)
+				asset, ok := item.Assets[assetKey]
+				if !ok {
+					fmt.Printf("  [warn] band '%s' not available (tried '%s')\n", band, assetKey)
+					continue
+				}
+				tasks <- downloadTask{itemID: item.ID, band: band, asset: asset, destDir: destDir, maxRetries: cfg.MaxRetries, auth: auth}
+			}
 		}
-	}
-	close(tasks)
+		close(tasks)
+	}()
 
 	failed := 0
 	skipped := 0
+	total := 0 // = 收到的 result 数 = 入队 task 数，用于失败/跳过汇总分母
 	for res := range results {
+		total++
 		if res.skipped {
 			fmt.Printf("  [skip] %s_%s.tif already exists\n", res.task.itemID, res.task.band)
 			skipped++
