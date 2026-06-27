@@ -71,7 +71,7 @@ func TestMergeSettings(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 
 	saved := &Settings{
-		Auth: &AuthConfig{Username: "test", Password: "secret"},
+		CDSEAuth: &AuthConfig{Username: "test", Password: "secret"},
 	}
 	if err := saveSettings(saved); err != nil {
 		t.Fatalf("saveSettings failed: %v", err)
@@ -90,7 +90,7 @@ func TestMergeSettings_PreservesExplicit(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 
 	saved := &Settings{
-		Auth: &AuthConfig{Username: "saved", Password: "secret"},
+		CDSEAuth: &AuthConfig{Username: "saved", Password: "secret"},
 	}
 	if err := saveSettings(saved); err != nil {
 		t.Fatal(err)
@@ -134,6 +134,12 @@ func TestResolveSatelliteType(t *testing.T) {
 		{"sentinel-1-grd", "", SatS1GRD},
 		{"sentinel-1-slc", "", SatS1SLC},
 		{"hls", "", SatHLS},
+		{"landsat-8", "", SatLandsat8},
+		{"landsat8", "", SatLandsat8},
+		{"l8", "", SatLandsat8},
+		{"landsat-9", "", SatLandsat9},
+		{"landsat9", "", SatLandsat9},
+		{"l9", "", SatLandsat9},
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%s_%s", tc.satellite, tc.product), func(t *testing.T) {
@@ -158,6 +164,8 @@ func TestLoadConfig_TwoLevelSatellite(t *testing.T) {
 		{"s1_grd", `{"satellite":"sentinel-1","product":"grd","start_date":"2025-01-01","end_date":"2025-01-02"}`, "sentinel-1-grd", "grd"},
 		{"s1_slc", `{"satellite":"sentinel-1","product":"slc","start_date":"2025-01-01","end_date":"2025-01-02"}`, "sentinel-1-slc", "slc"},
 		{"legacy_collection", `{"collection":"sentinel-1-slc","start_date":"2025-01-01","end_date":"2025-01-02"}`, "sentinel-1-slc", ""},
+		{"landsat8", `{"satellite":"landsat-8","start_date":"2025-01-01","end_date":"2025-01-02"}`, "landsat-8", ""},
+		{"l9", `{"satellite":"l9","start_date":"2025-01-01","end_date":"2025-01-02"}`, "landsat-9", ""},
 	}
 
 	for _, tc := range cases {

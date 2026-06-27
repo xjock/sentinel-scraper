@@ -80,7 +80,7 @@ func TestSaveSettings(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 
 	s := &Settings{
-		Auth:          &AuthConfig{Username: "test@example.com", Password: "secret"},
+		Auth:          &AuthConfig{Username: "legacy@example.com", Password: "secret"},
 		CDSEAuth:      &AuthConfig{Username: "cdse@example.com", Password: "cdsepass"},
 		EarthdataAuth: &AuthConfig{Username: "earth", Password: "earthpass"},
 	}
@@ -108,11 +108,11 @@ func TestSaveSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadSettings failed: %v", err)
 	}
-	if loaded.Auth == nil || loaded.Auth.Username != "test@example.com" {
-		t.Errorf("expected auth username=test@example.com, got %v", loaded.Auth)
-	}
 	if loaded.CDSEAuth == nil || loaded.CDSEAuth.Username != "cdse@example.com" {
 		t.Errorf("expected cdse_auth username=cdse@example.com, got %v", loaded.CDSEAuth)
+	}
+	if loaded.EarthdataAuth == nil || loaded.EarthdataAuth.Username != "earth" {
+		t.Errorf("expected earthdata_auth username=earth, got %v", loaded.EarthdataAuth)
 	}
 }
 
@@ -123,11 +123,14 @@ func TestHasSavedAuth(t *testing.T) {
 	if hasSavedAuth(&Settings{}) {
 		t.Error("expected false for empty auth")
 	}
-	if hasSavedAuth(&Settings{Auth: &AuthConfig{Username: "u"}}) {
-		t.Error("expected false for missing password")
+	if hasSavedAuth(&Settings{CDSEAuth: &AuthConfig{Username: "u"}}) {
+		t.Error("expected false for CDSE auth missing password")
 	}
-	if !hasSavedAuth(&Settings{Auth: &AuthConfig{Username: "u", Password: "p"}}) {
-		t.Error("expected true for complete auth")
+	if !hasSavedAuth(&Settings{CDSEAuth: &AuthConfig{Username: "u", Password: "p"}}) {
+		t.Error("expected true for complete CDSE auth")
+	}
+	if !hasSavedAuth(&Settings{EarthdataAuth: &AuthConfig{Username: "u", Password: "p"}}) {
+		t.Error("expected true for complete Earthdata auth")
 	}
 }
 

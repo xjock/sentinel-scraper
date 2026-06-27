@@ -14,9 +14,10 @@ import (
 var (
 	EarthSearchURL  = "https://earth-search.aws.element84.com/v1"
 	EarthdataURL    = "https://cmr.earthdata.nasa.gov/stac"
+	USGSSTACURL     = "https://landsatlook.usgs.gov/stac-server"
 	Collection      = "sentinel-2-l2a"
 	DownloadTimeout = 10 * time.Minute
-	version         = "dev"
+	version         = "2.0.0-usgs-preview"
 )
 
 func main() {
@@ -49,7 +50,7 @@ func main() {
 			"                         Default: 4\n"+
 			"    max_retries int       Number of retry attempts for each failed download.\n"+
 			"                         Default: 3\n"+
-			"    satellite   string    Satellite mission. Values: \"sentinel-2\", \"sentinel-1\", \"s2\", \"s1\", \"hls\"\n"+
+			"    satellite   string    Satellite mission. Values: \"sentinel-2\", \"sentinel-1\", \"s2\", \"s1\", \"hls\", \"landsat-8\", \"landsat-9\"\n"+
 			"                         Default: \"sentinel-2\"\n"+
 			"    product     string    Sentinel-1 product type. Values: \"grd\" | \"slc\"\n"+
 			"                         Only used when satellite=\"sentinel-1\". Default: \"grd\"")
@@ -64,7 +65,7 @@ func main() {
 			"  Type:    boolean flag (no value needed)\n"+
 			"  Default: false\n"+
 			"  Required: no\n"+
-			"  Scope:   Prompts for CDSE (Copernicus) and Earthdata (NASA) username/password,\n"+
+			"  Scope:   Prompts for CDSE (Copernicus) and Earthdata (NASA) credentials,\n"+
 			"           then writes them to ~/.sentinel-scraper/settings.json\n"+
 			"  Example: -setup-auth")
 	setupFlag := flag.Bool("setup", false,
@@ -235,12 +236,11 @@ func runSTACFlow(cfg *Config, auth Authenticator, destDir, configPath string) er
 	}
 
 	authLabel := "none"
-	if cfg.Auth != nil {
-		if _, ok := auth.(*EarthdataAuth); ok {
-			authLabel = "Bearer (Earthdata)"
-		} else {
-			authLabel = "OAuth2 (CDSE)"
-		}
+	switch auth.(type) {
+	case *EarthdataAuth:
+		authLabel = "Bearer (Earthdata)"
+	case *CDSEAuth:
+		authLabel = "OAuth2 (CDSE)"
 	}
 
 	fmt.Printf("Searching %s data...\n", sc.Collection)
@@ -468,6 +468,23 @@ func runWithFallback(cfg *Config, destDir, configPath string) {
 				},
 			})
 		}
+	case SatLandsat8, SatLandsat9:
+		sources = append(sources, source{
+			name: "Planetary Computer (Microsoft)",
+			try: func() error {
+				c := *cfg
+				return runPlanetaryFlow(&c, NoOpAuth{}, destDir)
+			},
+		})
+		sources = append(sources, source{
+			name: "USGS LandsatLook (STAC)",
+			try: func() error {
+				c := *cfg
+				c.STACURL = USGSSTACURL
+				c.Collection = "landsat-c2l2-sr"
+				return runSTACFlow(&c, NoOpAuth{}, destDir, configPath)
+			},
+		})
 	}
 
 	if len(sources) == 0 {

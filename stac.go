@@ -87,6 +87,32 @@ var satelliteConfigs = map[SatelliteType]satConfig{
 		},
 		KnownBands: []string{"coastal", "blue", "green", "red", "nir", "nir08", "nir09", "swir16", "swir22", "fmask"},
 	},
+	SatLandsat8: {
+		Collection:       "landsat-8-c2-l2",
+		NeedsCloudFilter: true,
+		SupportsRGB:      true,
+		DefaultBands:     []string{"red", "green", "blue"},
+		BandMap: map[string]string{
+			"coastal": "SR_B1", "blue": "SR_B2", "green": "SR_B3", "red": "SR_B4",
+			"nir": "SR_B5", "swir16": "SR_B6", "swir22": "SR_B7",
+			"panchromatic": "SR_B8", "cirrus": "SR_B9", "tirs1": "ST_B10",
+			"qa": "QA_PIXEL",
+		},
+		KnownBands: []string{"coastal", "blue", "green", "red", "nir", "swir16", "swir22", "panchromatic", "cirrus", "tirs1", "qa"},
+	},
+	SatLandsat9: {
+		Collection:       "landsat-9-c2-l2",
+		NeedsCloudFilter: true,
+		SupportsRGB:      true,
+		DefaultBands:     []string{"red", "green", "blue"},
+		BandMap: map[string]string{
+			"coastal": "SR_B1", "blue": "SR_B2", "green": "SR_B3", "red": "SR_B4",
+			"nir": "SR_B5", "swir16": "SR_B6", "swir22": "SR_B7",
+			"panchromatic": "SR_B8", "cirrus": "SR_B9", "tirs1": "ST_B10",
+			"qa": "QA_PIXEL",
+		},
+		KnownBands: []string{"coastal", "blue", "green", "red", "nir", "swir16", "swir22", "panchromatic", "cirrus", "tirs1", "qa"},
+	},
 }
 
 func resolveAssetKey(band, stacURL string, sat SatelliteType) string {
@@ -200,14 +226,28 @@ func SearchItems(opts SearchOptions, auth Authenticator) (*STACItemCollection, e
 	q.Set("datetime", datetime)
 	q.Set("limit", fmt.Sprintf("%d", opts.Limit))
 
+	queryParts := map[string]interface{}{}
 	if cfg.NeedsCloudFilter {
-		if opts.MinCloud > 0 && opts.MaxCloud > 0 {
-			q.Set("query", fmt.Sprintf(`{"eo:cloud_cover":{"gte":%f,"lte":%f}}`, opts.MinCloud, opts.MaxCloud))
-		} else if opts.MaxCloud > 0 {
-			q.Set("query", fmt.Sprintf(`{"eo:cloud_cover":{"lte":%f}}`, opts.MaxCloud))
-		} else if opts.MinCloud > 0 {
-			q.Set("query", fmt.Sprintf(`{"eo:cloud_cover":{"gte":%f}}`, opts.MinCloud))
+		cc := map[string]float64{}
+		if opts.MinCloud > 0 {
+			cc["gte"] = opts.MinCloud
 		}
+		if opts.MaxCloud > 0 {
+			cc["lte"] = opts.MaxCloud
+		}
+		if len(cc) > 0 {
+			queryParts["eo:cloud_cover"] = cc
+		}
+	}
+	if opts.Platform != "" {
+		queryParts["platform"] = map[string]string{"eq": opts.Platform}
+	}
+	if len(queryParts) > 0 {
+		qb, err := json.Marshal(queryParts)
+		if err != nil {
+			return nil, fmt.Errorf("marshal query filter: %w", err)
+		}
+		q.Set("query", string(qb))
 	}
 	u.RawQuery = q.Encode()
 
@@ -220,7 +260,7 @@ func SearchItems(opts SearchOptions, auth Authenticator) (*STACItemCollection, e
 		return nil, fmt.Errorf("authenticate request: %w", err)
 	}
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := newHTTPClient(60 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
@@ -365,7 +405,7 @@ func fetchItem(itemID, stacURL, collection string, auth Authenticator) (STACItem
 		return STACItem{}, fmt.Errorf("authenticate request: %w", err)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newHTTPClient(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return STACItem{}, fmt.Errorf("HTTP request failed: %w", err)
@@ -402,7 +442,7 @@ func DownloadAsset(asset Asset, destDir string, itemID string, bandName string, 
 	destPath := filepath.Join(destDir, filename)
 
 	url := resolveDownloadURL(asset)
-	client := &http.Client{Timeout: DownloadTimeout}
+	client := newHTTPClient(DownloadTimeout)
 	label := fmt.Sprintf("%s/%s", itemID, bandName)
 	ctx, cancel := context.WithTimeout(context.Background(), DownloadTimeout)
 	defer cancel()

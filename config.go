@@ -12,10 +12,12 @@ import (
 type SatelliteType string
 
 const (
-	SatS2L2A SatelliteType = "sentinel-2-l2a"
-	SatS1GRD SatelliteType = "sentinel-1-grd"
-	SatS1SLC SatelliteType = "sentinel-1-slc"
-	SatHLS   SatelliteType = "hls"
+	SatS2L2A    SatelliteType = "sentinel-2-l2a"
+	SatS1GRD    SatelliteType = "sentinel-1-grd"
+	SatS1SLC    SatelliteType = "sentinel-1-slc"
+	SatHLS      SatelliteType = "hls"
+	SatLandsat8 SatelliteType = "landsat-8"
+	SatLandsat9 SatelliteType = "landsat-9"
 )
 
 // ParseSatelliteType infers the satellite type from a collection name.
@@ -29,13 +31,17 @@ func ParseSatelliteType(collection string) SatelliteType {
 		return SatS1GRD
 	case strings.Contains(lower, "hls"):
 		return SatHLS
+	case strings.Contains(lower, "landsat-8") || strings.Contains(lower, "landsat8") || lower == "l8":
+		return SatLandsat8
+	case strings.Contains(lower, "landsat-9") || strings.Contains(lower, "landsat9") || lower == "l9":
+		return SatLandsat9
 	default:
 		return SatS2L2A
 	}
 }
 
 // ResolveSatelliteType resolves the satellite type from two-level params.
-// satellite: "sentinel-1", "sentinel-2", "s1", "s2", "hls"
+// satellite: "sentinel-1", "sentinel-2", "s1", "s2", "hls", "landsat-8", "l8", etc.
 // product:   "grd", "slc" (only for sentinel-1)
 func ResolveSatelliteType(satellite, product string) SatelliteType {
 	lower := strings.ToLower(satellite)
@@ -49,6 +55,10 @@ func ResolveSatelliteType(satellite, product string) SatelliteType {
 	switch {
 	case strings.Contains(lower, "hls"):
 		return SatHLS
+	case strings.Contains(lower, "landsat-8") || lower == "l8":
+		return SatLandsat8
+	case strings.Contains(lower, "landsat-9") || lower == "l9":
+		return SatLandsat9
 	case strings.Contains(lower, "sentinel-2") || lower == "s2":
 		return SatS2L2A
 	case strings.Contains(lower, "sentinel-1") || lower == "s1":
@@ -90,6 +100,7 @@ type SearchOptions struct {
 	STACURL    string
 	Collection string
 	Satellite  SatelliteType
+	Platform   string // optional STAC "platform" filter (e.g. "landsat-8", "landsat-9")
 }
 
 type AuthConfig struct {
