@@ -1,0 +1,12 @@
+{
+  "bbox": [116.2, 39.8, 116.6, 40.0],
+  "start_date": "2026-04-01",
+  "end_date": "2026-06-25",
+  "min_cloud": 0,
+  "max_cloud": 30,
+  "bands": ["red", "green", "blue"],
+  "satellite": "landsat-9",
+  "limit": 3,
+  "max_workers": 4,
+  "max_retries": 3
+}

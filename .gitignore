@@ -5,6 +5,11 @@ sentinel-scraper
 *.dll
 *.rar
 
+# Runtime artifacts (logs, PID files, foreground output)
+*.log
+*.pid
+*.output
+
 
 # Downloaded data
 sentinel_data/
