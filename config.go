@@ -71,23 +71,39 @@ func ResolveSatelliteType(satellite, product string) SatelliteType {
 	return ParseSatelliteType(satellite)
 }
 
+// SelectMode controls how scenes are chosen from STAC search results.
+type SelectMode string
+
+const (
+	SelectAll             SelectMode = "all"               // return all matching scenes
+	SelectClearestPerTile SelectMode = "clearest-per-tile" // S2 only: one clearest full-coverage scene per MGRS tile
+	SelectCloudFreeCover  SelectMode = "cloud-free-cover"  // S2 only: minimal set of scenes per MGRS tile whose footprints fully cover it
+)
+
 type Config struct {
 	BBox       []float64 `json:"bbox"`
 	StartDate  string    `json:"start_date"`
 	EndDate    string    `json:"end_date"`
 	MinCloud   float64   `json:"min_cloud"`
 	MaxCloud   float64   `json:"max_cloud"`
+	MaxNodata  float64   `json:"max_nodata"` // S2 only: max s2:nodata_pixel_percentage (0-100, 100=no filter)
 	Bands      []string  `json:"bands"`
 	Limit      int       `json:"limit"`
 	MaxWorkers int       `json:"max_workers"`
 	MaxRetries int       `json:"max_retries"`
-	Satellite  string    `json:"satellite,omitempty"` // sentinel-1, sentinel-2, s1, s2, hls
-	Product    string    `json:"product,omitempty"`   // grd, slc (仅 sentinel-1)
+	Satellite  string    `json:"satellite,omitempty"`   // sentinel-1, sentinel-2, s1, s2, hls
+	Product    string    `json:"product,omitempty"`     // grd, slc (仅 sentinel-1)
+	SelectMode string    `json:"select_mode,omitempty"` // "all" | "clearest-per-tile" | "cloud-free-cover"
+	Tiles      []string  `json:"tiles,omitempty"`       // optional explicit MGRS tile list for per-tile select modes
+	// CoverageTarget is the per-tile fill ratio (0-1) for cloud-free-cover. Default 0.995.
+	CoverageTarget float64 `json:"coverage_target,omitempty"`
+	// MaxPerTile caps how many scenes cloud-free-cover may stack per tile. Default 6.
+	MaxPerTile int `json:"max_per_tile,omitempty"`
 
 	// Internal fields, populated by mergeSettings or runWithFallback.
-	Auth       *AuthConfig
-	STACURL    string
-	Collection string
+	Auth       *AuthConfig `json:"-"`
+	STACURL    string      `json:"-"`
+	Collection string      `json:"collection,omitempty"`
 }
 
 type SearchOptions struct {
@@ -97,10 +113,24 @@ type SearchOptions struct {
 	Limit      int
 	MinCloud   float64
 	MaxCloud   float64
+	MaxNodata  float64 // S2 only
 	STACURL    string
 	Collection string
 	Satellite  SatelliteType
 	Platform   string // optional STAC "platform" filter (e.g. "landsat-8", "landsat-9")
+	SelectMode SelectMode
+	Tiles      []string   // explicit MGRS tile list; if empty and a per-tile mode is set, auto-discover
+	GridCode   string     // if set, search this tile instead of bbox
+	SortBy     []SortSpec // STAC sortby specs
+	// CoverageTarget and MaxPerTile drive the cloud-free-cover greedy set cover.
+	CoverageTarget float64
+	MaxPerTile     int
+}
+
+// SortSpec describes a single STAC sort criterion.
+type SortSpec struct {
+	Field     string `json:"field"`
+	Direction string `json:"direction"` // "asc" or "desc"
 }
 
 type AuthConfig struct {
@@ -126,6 +156,11 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 0
 	}
+	// max_nodata unset (zero) means "no coverage filter" (documented default 100),
+	// consistent with limit/max_workers where 0 selects the default.
+	if cfg.MaxNodata == 0 {
+		cfg.MaxNodata = 100
+	}
 	if len(cfg.BBox) != 0 && len(cfg.BBox) != 4 {
 		return nil, fmt.Errorf("bbox must have 4 elements [west,south,east,north], got %d", len(cfg.BBox))
 	}
@@ -137,6 +172,27 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.MinCloud > 0 && cfg.MaxCloud > 0 && cfg.MinCloud > cfg.MaxCloud {
 		return nil, fmt.Errorf("min_cloud (%.1f) cannot be greater than max_cloud (%.1f)", cfg.MinCloud, cfg.MaxCloud)
+	}
+	if cfg.MaxNodata < 0 || cfg.MaxNodata > 100 {
+		return nil, fmt.Errorf("max_nodata must be between 0 and 100, got %f", cfg.MaxNodata)
+	}
+	if cfg.SelectMode == "" {
+		cfg.SelectMode = string(SelectAll)
+	}
+	switch SelectMode(cfg.SelectMode) {
+	case SelectAll, SelectClearestPerTile, SelectCloudFreeCover:
+		// valid
+	default:
+		return nil, fmt.Errorf("select_mode must be \"all\", \"clearest-per-tile\" or \"cloud-free-cover\", got %q", cfg.SelectMode)
+	}
+	if cfg.CoverageTarget == 0 {
+		cfg.CoverageTarget = 0.995
+	}
+	if cfg.CoverageTarget <= 0 || cfg.CoverageTarget > 1 {
+		return nil, fmt.Errorf("coverage_target must be in (0,1], got %f", cfg.CoverageTarget)
+	}
+	if cfg.MaxPerTile == 0 {
+		cfg.MaxPerTile = 6
 	}
 	if cfg.Satellite == "" {
 		if cfg.Collection != "" {
@@ -151,6 +207,9 @@ func LoadConfig(path string) (*Config, error) {
 			cfg.Satellite = string(sat)
 		}
 	}
+	if (SelectMode(cfg.SelectMode) == SelectClearestPerTile || SelectMode(cfg.SelectMode) == SelectCloudFreeCover) && SatelliteType(cfg.Satellite) != SatS2L2A {
+		return nil, fmt.Errorf("select_mode=%q is only supported for sentinel-2, got %s", cfg.SelectMode, cfg.Satellite)
+	}
 	return &cfg, nil
 }
 
@@ -160,10 +219,14 @@ func defaultConfigJSON() ([]byte, error) {
 		BBox:       []float64{116.2, 39.8, 116.6, 40.0},
 		StartDate:  now.AddDate(0, 0, -30).Format("2006-01-02"),
 		EndDate:    now.Format("2006-01-02"),
+		MinCloud:   0,
+		MaxCloud:   100,
+		MaxNodata:  100,
 		Bands:      []string{"red", "green", "blue"},
 		Limit:      20,
 		MaxWorkers: 4,
 		MaxRetries: 3,
+		SelectMode: string(SelectAll),
 	}
 	return json.MarshalIndent(defaultCfg, "", "  ")
 }

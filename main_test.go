@@ -547,3 +547,316 @@ func TestBuildRGB_S1Skip(t *testing.T) {
 		t.Errorf("S1 should skip RGB without error, got %v", err)
 	}
 }
+
+func TestFilterItemsByNodata(t *testing.T) {
+	items := []STACItem{
+		{ID: "full", Properties: STACProperties{NodataPixelPercentage: f64ptr(0)}},
+		{ID: "partial", Properties: STACProperties{NodataPixelPercentage: f64ptr(45)}},
+		{ID: "missing", Properties: STACProperties{NodataPixelPercentage: nil}},
+	}
+
+	filtered := FilterItemsByNodata(items, 5, SatS2L2A)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(filtered))
+	}
+	if filtered[0].ID != "full" || filtered[1].ID != "missing" {
+		t.Errorf("unexpected filtered ids: %v", filtered)
+	}
+
+	// Non-S2 should pass through unchanged.
+	filteredS1 := FilterItemsByNodata(items, 5, SatS1GRD)
+	if len(filteredS1) != 3 {
+		t.Errorf("expected S1 to pass through all 3 items, got %d", len(filteredS1))
+	}
+
+	// maxNodata=100 means no filtering.
+	filteredNoOp := FilterItemsByNodata(items, 100, SatS2L2A)
+	if len(filteredNoOp) != 3 {
+		t.Errorf("expected no-op filter to pass through all 3 items, got %d", len(filteredNoOp))
+	}
+}
+
+func TestSearchItems_MaxNodata(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		resp := STACItemCollection{
+			Type: "FeatureCollection",
+			Features: []STACItem{
+				{ID: "S2A_20250105", Type: "Feature", Properties: STACProperties{Datetime: "2025-01-05T00:00:00Z", CloudCover: f64ptr(5), NodataPixelPercentage: f64ptr(3)}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/geo+json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	oldURL := EarthSearchURL
+	EarthSearchURL = srv.URL
+	defer func() { EarthSearchURL = oldURL }()
+
+	_, err := SearchItems(SearchOptions{
+		Bbox:      []float64{116.2, 39.8, 116.6, 40.0},
+		StartDate: "2025-01-01",
+		EndDate:   "2025-01-15",
+		Limit:     5,
+		MaxNodata: 5,
+		Satellite: SatS2L2A,
+	}, NoOpAuth{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotQuery, "s2:nodata_pixel_percentage") {
+		t.Errorf("expected nodata filter in query, got %s", gotQuery)
+	}
+	if !strings.Contains(gotQuery, `"lte":5`) {
+		t.Errorf("expected nodata lte 5, got %s", gotQuery)
+	}
+}
+
+func TestSearchItems_GridCodeAndSortby(t *testing.T) {
+	var gotQuery, gotSortby string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		gotSortby = r.URL.Query().Get("sortby")
+		bbox := r.URL.Query().Get("bbox")
+		if bbox != "" {
+			t.Errorf("expected no bbox when grid:code is set, got %s", bbox)
+		}
+		resp := STACItemCollection{
+			Type: "FeatureCollection",
+			Features: []STACItem{
+				{ID: "S2A_T37MDS_20250105", Type: "Feature", Properties: STACProperties{Datetime: "2025-01-05T00:00:00Z", CloudCover: f64ptr(0), GridCode: "MGRS-37MDS"}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/geo+json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	oldURL := EarthSearchURL
+	EarthSearchURL = srv.URL
+	defer func() { EarthSearchURL = oldURL }()
+
+	_, err := SearchItems(SearchOptions{
+		Bbox:      []float64{116.2, 39.8, 116.6, 40.0}, // kept for validation path
+		StartDate: "2025-01-01",
+		EndDate:   "2025-01-15",
+		Limit:     1,
+		Satellite: SatS2L2A,
+		GridCode:  "MGRS-37MDS",
+		SortBy:    []SortSpec{{Field: "properties.eo:cloud_cover", Direction: "asc"}},
+	}, NoOpAuth{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotQuery, `"grid:code"`) || !strings.Contains(gotQuery, `"eq":"MGRS-37MDS"`) {
+		t.Errorf("expected grid:code filter, got %s", gotQuery)
+	}
+	if !strings.Contains(gotSortby, "+properties.eo:cloud_cover") {
+		t.Errorf("expected sortby token +properties.eo:cloud_cover, got %s", gotSortby)
+	}
+}
+
+func TestSearchItemsClearestPerTile(t *testing.T) {
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		q := r.URL.Query()
+		queryParam := q.Get("query")
+
+		// Discovery request has bbox and no grid:code.
+		if !strings.Contains(queryParam, "grid:code") {
+			resp := STACItemCollection{
+				Type: "FeatureCollection",
+				Features: []STACItem{
+					{ID: "S2A_T37MDS_20250105", Properties: STACProperties{CloudCover: f64ptr(5), GridCode: "MGRS-37MDS"}},
+					{ID: "S2A_T37MDT_20250106", Properties: STACProperties{CloudCover: f64ptr(10), GridCode: "MGRS-37MDT"}},
+				},
+			}
+			w.Header().Set("Content-Type", "application/geo+json")
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// Per-tile request returns one scene; derive tile from the query.
+		tile := ""
+		for _, code := range []string{"MGRS-37MDS", "MGRS-37MDT"} {
+			if strings.Contains(queryParam, code) {
+				tile = extractTileFromGridCode(code)
+				break
+			}
+		}
+		if tile == "" {
+			t.Errorf("unexpected grid:code in query: %s", queryParam)
+		}
+		cc := 0.1
+		if tile == "37MDT" {
+			cc = 0.2
+		}
+		resp := STACItemCollection{
+			Type: "FeatureCollection",
+			Features: []STACItem{
+				{ID: fmt.Sprintf("S2A_T%s_20250105", tile), Properties: STACProperties{CloudCover: &cc}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/geo+json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	oldURL := EarthSearchURL
+	EarthSearchURL = srv.URL
+	defer func() { EarthSearchURL = oldURL }()
+
+	tiles := []string{"37MDS", "37MDT"}
+	collection, err := SearchItemsClearestPerTile(SearchOptions{
+		Bbox:      []float64{116.2, 39.8, 116.6, 40.0},
+		StartDate: "2025-01-01",
+		EndDate:   "2025-01-15",
+		Limit:     10,
+		Satellite: SatS2L2A,
+		Tiles:     tiles,
+	}, NoOpAuth{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(collection.Features) != 2 {
+		t.Fatalf("expected 2 features (one per tile), got %d", len(collection.Features))
+	}
+	if requestCount != 2 { // explicit tiles: no discovery + 2 per-tile requests
+		t.Errorf("expected 2 requests with explicit tiles, got %d", requestCount)
+	}
+}
+
+func TestSearchItemsClearestPerTile_RequiresS2(t *testing.T) {
+	_, err := SearchItemsClearestPerTile(SearchOptions{
+		Bbox:      []float64{0, 0, 1, 1},
+		StartDate: "2025-01-01",
+		EndDate:   "2025-01-15",
+		Satellite: SatS1GRD,
+	}, NoOpAuth{})
+	if err == nil {
+		t.Fatal("expected error for non-S2 satellite")
+	}
+	if !strings.Contains(err.Error(), "sentinel-2") {
+		t.Errorf("expected sentinel-2 error, got %v", err)
+	}
+}
+
+func TestExtractTileFromGridCode(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"MGRS-37MDS", "37MDS"},
+		{"37MDS", "37MDS"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := extractTileFromGridCode(tc.input)
+		if got != tc.want {
+			t.Errorf("extractTileFromGridCode(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestEffectiveNodata_CDSEMapping verifies coverage is read from Earth Search's
+// s2:nodata_pixel_percentage OR CDSE's nested statistics.nodata (both 0-100%).
+func TestEffectiveNodata_CDSEMapping(t *testing.T) {
+	cases := []struct {
+		name    string
+		props   STACProperties
+		wantVal float64
+		wantOK  bool
+	}{
+		{"earthsearch field", STACProperties{NodataPixelPercentage: f64ptr(12.5)}, 12.5, true},
+		{"cdse statistics", STACProperties{Statistics: map[string]float64{"nodata": 45.9, "water": 0.1}}, 45.9, true},
+		{"earthsearch wins over statistics", STACProperties{NodataPixelPercentage: f64ptr(0), Statistics: map[string]float64{"nodata": 99}}, 0, true},
+		{"neither present", STACProperties{}, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := c.props.EffectiveNodata()
+			if ok != c.wantOK || (ok && got != c.wantVal) {
+				t.Errorf("EffectiveNodata() = (%v, %v), want (%v, %v)", got, ok, c.wantVal, c.wantOK)
+			}
+		})
+	}
+}
+
+// TestFilterItemsByNodata_CDSE ensures CDSE partial granules (statistics.nodata
+// high) are dropped while full-coverage scenes pass, using the same threshold.
+func TestFilterItemsByNodata_CDSE(t *testing.T) {
+	items := []STACItem{
+		{ID: "cdse-full", Properties: STACProperties{Statistics: map[string]float64{"nodata": 0.0002}}},
+		{ID: "cdse-partial", Properties: STACProperties{Statistics: map[string]float64{"nodata": 45.9}}},
+		{ID: "es-full", Properties: STACProperties{NodataPixelPercentage: f64ptr(0)}},
+		{ID: "es-partial", Properties: STACProperties{NodataPixelPercentage: f64ptr(73)}},
+		{ID: "unknown", Properties: STACProperties{}},
+	}
+	got := FilterItemsByNodata(items, 5, SatS2L2A)
+	keep := map[string]bool{}
+	for _, it := range got {
+		keep[it.ID] = true
+	}
+	for _, id := range []string{"cdse-full", "es-full", "unknown"} {
+		if !keep[id] {
+			t.Errorf("expected %s to be kept", id)
+		}
+	}
+	for _, id := range []string{"cdse-partial", "es-partial"} {
+		if keep[id] {
+			t.Errorf("expected %s to be dropped", id)
+		}
+	}
+}
+
+// poly builds a single-ring Polygon geometry from [lon,lat] pairs.
+func poly(coords [][]float64) Geometry {
+	return Geometry{Type: "Polygon", Coordinates: [][][]float64{coords}}
+}
+
+func sceneIDs(items []STACItem) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.ID
+	}
+	return out
+}
+
+func TestPointInRing(t *testing.T) {
+	sq := [][]float64{{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}}
+	if !pointInRing(0.5, 0.5, sq) {
+		t.Error("center should be inside")
+	}
+	if pointInRing(1.5, 0.5, sq) {
+		t.Error("point to the right should be outside")
+	}
+}
+
+func TestGreedyCoverScenes(t *testing.T) {
+	sq := func(x0, y0, x1, y1 float64) [][]float64 {
+		return [][]float64{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}, {x0, y0}}
+	}
+	full := STACItem{ID: "full", Geometry: poly(sq(0, 0, 1, 1)), Properties: STACProperties{CloudCover: f64ptr(5)}}
+	left := STACItem{ID: "left", Geometry: poly(sq(0, 0, 0.5, 1)), Properties: STACProperties{CloudCover: f64ptr(1)}}
+	right := STACItem{ID: "right", Geometry: poly(sq(0.5, 0, 1, 1)), Properties: STACProperties{CloudCover: f64ptr(2)}}
+
+	// One full-coverage scene suffices.
+	if got := greedyCoverScenes([]STACItem{full}, 0.99, 6); len(got) != 1 || got[0].ID != "full" {
+		t.Errorf("expected [full], got %v", sceneIDs(got))
+	}
+	// No single scene covers all -> must stack both halves.
+	if got := greedyCoverScenes([]STACItem{left, right}, 0.99, 6); len(got) != 2 {
+		t.Errorf("expected 2 scenes to cover, got %v", sceneIDs(got))
+	}
+	// A full scene present -> greedy prefers the single full one.
+	if got := greedyCoverScenes([]STACItem{left, right, full}, 0.99, 6); len(got) != 1 || got[0].ID != "full" {
+		t.Errorf("expected [full] (fewest), got %v", sceneIDs(got))
+	}
+	// maxPerTile caps stacking.
+	if got := greedyCoverScenes([]STACItem{left, right}, 0.99, 1); len(got) != 1 {
+		t.Errorf("expected cap at 1 scene, got %v", sceneIDs(got))
+	}
+}

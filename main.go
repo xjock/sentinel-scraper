@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,7 +18,7 @@ var (
 	USGSSTACURL     = "https://landsatlook.usgs.gov/stac-server"
 	Collection      = "sentinel-2-l2a"
 	DownloadTimeout = 10 * time.Minute
-	version         = "2.0.0-usgs-preview"
+	version         = "2.0.0"
 )
 
 func main() {
@@ -40,6 +41,18 @@ func main() {
 			"                         Default: 0\n"+
 			"    max_cloud   float     Maximum cloud cover percentage (0–100). Only for optical.\n"+
 			"                         Default: 100 (no filter)\n"+
+			"    max_nodata  float     Maximum Sentinel-2 nodata pixel percentage (0–100).\n"+
+			"                         Filters out partial-granule scenes. 100 = no filter.\n"+
+			"                         Default: 100 (no filter)\n"+
+			"    select_mode string    Scene selection strategy (Sentinel-2 only for the\n"+
+			"                         per-tile modes). Values:\n"+
+			"                           \"all\"               every matching scene (default)\n"+
+			"                           \"clearest-per-tile\" one clearest full-coverage scene per MGRS tile\n"+
+			"                           \"cloud-free-cover\"  fewest scenes per tile whose footprints cover it\n"+
+			"    coverage_target float Per-tile fill ratio for cloud-free-cover (0-1). Default 0.995.\n"+
+			"    max_per_tile int      Max scenes stacked per tile for cloud-free-cover. Default 6.\n"+
+			"    tiles       []string  Optional explicit MGRS tile list for the per-tile modes.\n"+
+			"                         If empty, tiles are auto-discovered from the bbox.\n"+
 			"    bands       []string  Band keys to download.\n"+
 			"                         S2 defaults: [\"red\", \"green\", \"blue\"]\n"+
 			"                         S1 defaults: [\"vv\", \"vh\"]\n"+
@@ -112,6 +125,14 @@ func main() {
 			"  Type:     boolean flag (no value needed)\n"+
 			"  Default:  false\n"+
 			"  Required:  no")
+	listTiles := flag.Bool("list-tiles", false,
+		"Auto-discover the Sentinel-2 MGRS tiles intersecting the config bbox, print\n"+
+			"them, and exit without downloading (dry run). Use the printed list to\n"+
+			"populate the \"tiles\" config field, or just leave \"tiles\" empty to let the\n"+
+			"per-tile select modes auto-discover them at run time.\n"+
+			"  Type:    boolean flag (no value needed)\n"+
+			"  Default: false\n"+
+			"  Example: -list-tiles -config config.json")
 	flag.Parse()
 
 	if len(os.Args) == 1 {
@@ -169,6 +190,39 @@ func main() {
 		os.Exit(1)
 	}
 	mergeSettings(cfg)
+
+	if *listTiles {
+		sat := SatelliteType(cfg.Satellite)
+		if sat != SatS2L2A {
+			fmt.Fprintln(os.Stderr, "-list-tiles is only supported for sentinel-2")
+			os.Exit(1)
+		}
+		if len(cfg.BBox) != 4 {
+			fmt.Fprintln(os.Stderr, "-list-tiles requires a 4-element bbox in the config")
+			os.Exit(1)
+		}
+		opts := SearchOptions{
+			Bbox:      cfg.BBox,
+			StartDate: cfg.StartDate,
+			EndDate:   cfg.EndDate,
+			Limit:     cfg.Limit,
+			MinCloud:  cfg.MinCloud,
+			MaxCloud:  cfg.MaxCloud,
+			Satellite: sat,
+			STACURL:   EarthSearchURL,
+		}
+		tiles, err := discoverTiles(opts, NoOpAuth{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "discover tiles failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Discovered %d MGRS tile(s) intersecting bbox %v (cloud <= %.0f%%):\n",
+			len(tiles), cfg.BBox, cfg.MaxCloud)
+		fmt.Println(strings.Join(tiles, ","))
+		fmt.Println("\nTip: leave \"tiles\" empty to auto-discover at run time, or paste the")
+		fmt.Println("list above into the config's \"tiles\" field to pin an explicit set.")
+		return
+	}
 
 	if *orbitDownload {
 		if *safeDir == "" {
@@ -230,9 +284,14 @@ func runSTACFlow(cfg *Config, auth Authenticator, destDir, configPath string) er
 		Limit:      cfg.Limit,
 		MinCloud:   cfg.MinCloud,
 		MaxCloud:   cfg.MaxCloud,
+		MaxNodata:  cfg.MaxNodata,
 		STACURL:    cfg.STACURL,
 		Collection: cfg.Collection,
 		Satellite:  sat,
+		SelectMode: SelectMode(cfg.SelectMode),
+		Tiles:      cfg.Tiles,
+		CoverageTarget: cfg.CoverageTarget,
+		MaxPerTile:     cfg.MaxPerTile,
 	}
 
 	authLabel := "none"
@@ -262,11 +321,30 @@ func runSTACFlow(cfg *Config, auth Authenticator, destDir, configPath string) er
 			fmt.Printf("  Cloud:     no filter\n")
 		}
 	}
+	if sat == SatS2L2A {
+		if cfg.MaxNodata >= 0 && cfg.MaxNodata < 100 {
+			fmt.Printf("  Nodata:    <= %.0f%% (coverage filter)\n", cfg.MaxNodata)
+		} else {
+			fmt.Printf("  Nodata:    no filter\n")
+		}
+		fmt.Printf("  Select:    %s\n", cfg.SelectMode)
+		if len(cfg.Tiles) > 0 {
+			fmt.Printf("  Tiles:     %v\n", cfg.Tiles)
+		}
+	}
 	fmt.Printf("  Bands:     %v\n", cfg.Bands)
 	fmt.Printf("  Workers:   %d\n", cfg.MaxWorkers)
 	fmt.Printf("  Retries:   %d\n\n", cfg.MaxRetries)
 
-	stacCollection, err := SearchItems(opts, auth)
+	var stacCollection *STACItemCollection
+	var err error
+	if opts.SelectMode == SelectClearestPerTile {
+		stacCollection, err = SearchItemsClearestPerTile(opts, auth)
+	} else if opts.SelectMode == SelectCloudFreeCover {
+		stacCollection, err = SearchItemsCloudFreeCover(opts, auth)
+	} else {
+		stacCollection, err = SearchItems(opts, auth)
+	}
 	if err != nil {
 		return fmt.Errorf("search failed: %w", err)
 	}
@@ -277,6 +355,11 @@ func runSTACFlow(cfg *Config, auth Authenticator, destDir, configPath string) er
 	}
 
 	items := FilterItemsByCloud(stacCollection.Features, opts.MinCloud, opts.MaxCloud, sat)
+	// cloud-free-cover intentionally stacks partial-granule scenes to fill swaths,
+	// so the nodata coverage filter must not drop them.
+	if opts.SelectMode != SelectCloudFreeCover {
+		items = FilterItemsByNodata(items, opts.MaxNodata, sat)
+	}
 	PrintItemSummary(items)
 
 	// 为已有数据补生成 KML
@@ -428,13 +511,16 @@ func runWithFallback(cfg *Config, destDir, configPath string) {
 					return runSTACFlow(&c, NewCDSEAuth(cdseAuth.Username, cdseAuth.Password), destDir, configPath)
 				},
 			})
-			sources = append(sources, source{
-				name: "CDSE OData",
-				try: func() error {
-					c := *cfg
-					return runODataFlow(&c, NewCDSEAuth(cdseAuth.Username, cdseAuth.Password), destDir)
-				},
-			})
+			// Per-tile select modes rely on STAC grid:code/sortby; OData does not support them.
+			if SelectMode(cfg.SelectMode) != SelectClearestPerTile && SelectMode(cfg.SelectMode) != SelectCloudFreeCover {
+				sources = append(sources, source{
+					name: "CDSE OData",
+					try: func() error {
+						c := *cfg
+						return runODataFlow(&c, NewCDSEAuth(cdseAuth.Username, cdseAuth.Password), destDir)
+					},
+				})
+			}
 		}
 	case SatS1GRD, SatS1SLC:
 		sources = append(sources, source{

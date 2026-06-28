@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -212,5 +213,100 @@ func TestLoadConfig_BBoxValidation(t *testing.T) {
 				t.Fatal("expected error for invalid bbox length")
 			}
 		})
+	}
+}
+
+func TestLoadConfig_MaxNodataValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cases := []struct {
+		name      string
+		maxNodata float64
+		ok        bool
+	}{
+		{"default zero", 0, true},
+		{"valid 5", 5, true},
+		{"no filter 100", 100, true},
+		{"negative", -1, false},
+		{"over 100", 101, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(tmpDir, tc.name+".json")
+			cfgData := Config{BBox: []float64{0, 0, 1, 1}, StartDate: "2025-01-01", EndDate: "2025-01-02", MaxNodata: tc.maxNodata}
+			data, _ := json.Marshal(cfgData)
+			os.WriteFile(path, data, 0644)
+
+			_, err := LoadConfig(path)
+			if tc.ok && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("expected error for invalid max_nodata")
+			}
+		})
+	}
+}
+
+func TestLoadConfig_SelectModeValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cases := []struct {
+		name       string
+		selectMode string
+		want       SelectMode
+		ok         bool
+	}{
+		{"empty defaults to all", "", SelectAll, true},
+		{"all", "all", SelectAll, true},
+		{"clearest-per-tile", "clearest-per-tile", SelectClearestPerTile, true},
+		{"cloud-free-cover", "cloud-free-cover", SelectCloudFreeCover, true},
+		{"invalid", "bogus-mode", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(tmpDir, tc.name+".json")
+			cfgData := Config{BBox: []float64{0, 0, 1, 1}, StartDate: "2025-01-01", EndDate: "2025-01-02", SelectMode: tc.selectMode}
+			data, _ := json.Marshal(cfgData)
+			os.WriteFile(path, data, 0644)
+
+			cfg, err := LoadConfig(path)
+			if tc.ok {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if SelectMode(cfg.SelectMode) != tc.want {
+					t.Errorf("expected select_mode=%q, got %q", tc.want, cfg.SelectMode)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected error for invalid select_mode")
+				}
+			}
+		})
+	}
+}
+
+func TestLoadConfig_ClearestPerTileRequiresS2(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "s1_clearest.json")
+	cfgData := Config{
+		BBox:       []float64{0, 0, 1, 1},
+		StartDate:  "2025-01-01",
+		EndDate:    "2025-01-15",
+		Satellite:  "sentinel-1",
+		SelectMode: "clearest-per-tile",
+	}
+	data, _ := json.Marshal(cfgData)
+	os.WriteFile(path, data, 0644)
+
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected error for clearest-per-tile with non-S2 satellite")
+	}
+	if !strings.Contains(err.Error(), "sentinel-2") {
+		t.Errorf("expected sentinel-2 error, got %v", err)
 	}
 }

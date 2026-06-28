@@ -4,7 +4,7 @@ English | [中文](README.md)
 
 A lightweight Go CLI for searching and downloading Sentinel-1 (SAR) and Sentinel-2 (multispectral optical) satellite imagery. Supports multiple data sources, web/terminal setup wizards, resumable downloads, automatic RGB composition with black-border trimming, and outputs Cloud Optimized GeoTIFFs (COG). **Pure Go standard library — zero external Go dependencies.**
 
-> Current version: **v1.0**
+> Current version: **v2.0.0**
 
 ## Features
 

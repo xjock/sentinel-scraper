@@ -4,7 +4,7 @@
 
 一个轻量级的 Go 命令行工具，用于查询并下载 Sentinel-1（SAR 雷达）和 Sentinel-2（多光谱光学）卫星影像。支持多种数据源、网页与终端配置向导、断点续传、自动 RGB 合成与去黑边裁切，输出为 Cloud Optimized GeoTIFF（COG）。**纯 Go 标准库实现，零外部 Go 依赖。**
 
-> 当前版本：**v1.0**
+> 当前版本：**v2.0.0**
 
 ## 特性
 
@@ -15,6 +15,7 @@
   - Sentinel-1 GRD / SLC（SAR 雷达数据，VV/VH 极化，不受云影响）
 - **配置向导**：首次运行自动打开浏览器，也支持终端 SSH 模式
 - **友好波段名**：`red` / `green` / `blue` / `nir` 等，自动映射到各数据源对应的资源键
+- **智能选景（S2）**：`clearest-per-tile`（每瓦片取最清一景）、`cloud-free-cover`（贪心集合覆盖，多景缝补成无缝少云底图），配合 `max_nodata` 覆盖率过滤剔除“部分条带”；瓦片可 `-list-tiles` 干跑预览或自动发现
 - **断点续传**：基于 HTTP `Range`，已下载文件自动跳过
 - **并发下载**：可配置 worker 池
 - **RGB / RGBA 合成**：通过 GDAL 自动生成 8-bit RGB 合成图，并自动**去黑边**裁出真实成像范围
@@ -127,18 +128,45 @@ go build -o sentinel-scraper .
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| 字段 | 类型 | 说明 |
-|------|------|------|
 | `bbox` | `[float64]` | 边界框 `[西, 南, 东, 北]` |
 | `start_date` | `string` | 起始日期 `YYYY-MM-DD` |
 | `end_date` | `string` | 结束日期 `YYYY-MM-DD` |
 | `min_cloud` | `float64` | 最小云量百分比（0–100，仅 Sentinel-2） |
 | `max_cloud` | `float64` | 最大云量百分比（0–100，仅 Sentinel-2） |
+| `max_nodata` | `float64` | 最大空值像元百分比（0–100，仅 S2），剔除“部分条带”景；**100 = 不过滤**（默认） |
+| `select_mode` | `string` | 选景策略（仅 S2）：`all` / `clearest-per-tile` / `cloud-free-cover`（见下方[智能选景](#智能选景s2少云满覆盖)与 [CONFIG.md](CONFIG.md)） |
+| `tiles` | `[string]` | 显式 MGRS 瓦片码（不带 `MGRS-` 前缀），留空则自动发现，仅 per-tile 模式有效 |
+| `coverage_target` | `float64` | `cloud-free-cover` 每瓦片目标覆盖率（0–1，默认 0.995） |
+| `max_per_tile` | `int` | `cloud-free-cover` 每瓦片最多叠加景数（默认 6） |
 | `bands` | `[string]` | 待下载的波段/极化列表（友好名称） |
 | `satellite` | `string` | 卫星类型：`sentinel-2-l2a` / `sentinel-1-grd` / `sentinel-1-slc` |
 | `limit` | `int` | STAC 查询返回上限（默认 20） |
 | `max_workers` | `int` | 并发下载线程数（默认 4） |
 | `max_retries` | `int` | 单文件失败重试次数（默认 3） |
+
+### 智能选景（S2，少云·满覆盖）
+
+针对 Sentinel-2，`select_mode` 让你**只给 bbox** 就能得到“少云、无空洞”的镶嵌底图，
+无需手动指定瓦片：
+
+| 模式 | 行为 | 适用 |
+|------|------|------|
+| `all`（默认） | 返回符合云量/覆盖率过滤的全部场景 | 时间序列、样本采集、存档 |
+| `clearest-per-tile` | 每个 MGRS 瓦片取最清晰的一景（满覆盖优先） | 快速单期底图 |
+| `cloud-free-cover` | 每个瓦片用最少的若干景贪心拼满，自动叠加互补条带填洞 | 无缝少云镶嵌产品 |
+
+配合 `max_nodata`（如 `5`）剔除“部分条带”假晴空景。完整说明与示例见 **[CONFIG.md](CONFIG.md)**。
+
+```json
+{
+  "satellite": "sentinel-2",
+  "bbox": [36.44, -4.51, 40.10, -0.90],
+  "start_date": "2025-01-01", "end_date": "2026-06-27",
+  "max_cloud": 5,
+  "select_mode": "cloud-free-cover",
+  "bands": ["red", "green", "blue"]
+}
+```
 
 ### 命令行参数
 
@@ -146,8 +174,11 @@ go build -o sentinel-scraper .
 |------|--------|------|
 | `-config` | `config.json` | 查询配置 JSON 路径 |
 | `-dest` | `./sentinel_data` | 下载文件保存目录 |
+| `-list-tiles` | — | 按 bbox 自动发现并打印相交的 MGRS 瓦片清单后退出（不下载，干跑预览；仅 S2） |
+| `-default` | — | 生成默认 `config.json` 后退出 |
 | `-setup` | — | 打开网页配置向导 |
 | `-setup-auth` | — | 打开终端配置向导 |
+| `-version` | — | 打印版本号后退出 |
 
 ### 环境变量
 
@@ -301,7 +332,7 @@ docker run --rm \
 | `config.go` | `Config` / `SearchOptions` 结构、配置加载与合并 |
 | `settings.go` | 用户级持久化设置、网页 / CLI 配置向导 |
 | `auth.go` | 认证抽象、CDSE Keycloak OAuth2 密码模式 |
-| `stac.go` | STAC 搜索、云量过滤、按波段下载 |
+| `stac.go` | STAC 搜索与分页、云量/覆盖率过滤、逐瓦片选景（clearest-per-tile / cloud-free-cover 集合覆盖）、按波段下载 |
 | `odata.go` | CDSE OData 搜索、整景 ZIP 下载、JP2 提取与 RGB 合成 |
 | `gdal.go` | GDAL 工具发现、`BuildRGB` / RGBA 去黑边 |
 | `kml.go` | 共享的 KML 写入辅助 |
@@ -342,6 +373,13 @@ docker run --rm \
 - CDSE OData：整景 ZIP 通常 500 MB–1 GB+，单文件超时 30 分钟
 - 网络不稳定时，调高 `config.json` 中的 `max_retries`（如 3 或 5）
 - 中断后重新运行会自动断点续传
+
+**Q：如何一步得到“无缝、少云”的镶嵌底图？**
+
+Sentinel-2 设 `"select_mode": "cloud-free-cover"` + `"max_cloud": 5`，`tiles` 留空。
+程序会按 bbox 自动发现所有相交瓦片，每个瓦片用最少的若干景贪心拼满（自动叠加互补
+条带填补“部分条带”空洞），得到全程 <5% 云、无空洞的结果。想先看会下哪些瓦片，可先
+`sentinel-scraper -list-tiles -config config.json` 干跑预览。详见 [CONFIG.md](CONFIG.md)。
 
 **Q：搜索没有返回数据？**
 
